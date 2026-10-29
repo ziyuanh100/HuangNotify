@@ -1,6 +1,6 @@
 # 隱私說明
 
-HuangNotify 0.1.0 是本機通知紀錄工具。
+HuangNotify 0.2.0 是本機通知紀錄工具。
 
 ## 處理哪些資訊
 
@@ -8,7 +8,7 @@ HuangNotify 0.1.0 是本機通知紀錄工具。
 
 ## 資料存放
 
-通知與設定保存在 Android App 私有儲存空間中的 SQLite 資料庫。App 不具備網路權限，不提供登入、雲端同步、廣告或分析追蹤。資料庫未額外加密；保護依賴 Android 裝置與 App 沙箱。
+通知與設定保存在 Android App 私有儲存空間中的 SQLite 資料庫。App 具有網路權限，只在使用者手動檢查或開啟自動更新檢查後向 api.github.com 讀取公開 Release 資訊。GitHub 會收到來源 IP、一般 HTTP 標頭及固定 User-Agent；不傳送通知內容、備份、裝置識別碼或帳號。點選下載會在瀏覽器開啟 github.com，適用 GitHub 隱私政策。自動檢查預設關閉，可隨時關閉；更新偏好僅存本機、不包含在通知備份內。App 不提供登入、雲端同步、廣告或分析追蹤。資料庫未額外加密；保護依賴 Android 裝置與 App 沙箱。
 
 Android 的系統備份與裝置轉移備份已透過 manifest 與 extraction rules 排除本 App 資料。使用者可手動匯出備份到自行選擇的檔案提供者；如果選擇雲端硬碟位置，檔案會由該提供者處理，並受其規範約束。
 

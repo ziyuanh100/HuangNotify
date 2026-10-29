@@ -137,6 +137,8 @@ public final class MainActivity extends Activity {
     resumed = true;
     handler.removeCallbacks(poll);
     handler.post(poll);
+    UpdateChecker.schedule(this);
+    if (UpdateChecker.enabled(this)) UpdateChecker.check(this, false, result -> {});
   }
 
   @Override
@@ -782,12 +784,65 @@ public final class MainActivity extends Activity {
                 .setPositiveButton(
                     "清除", (d, w) -> mutate(() -> Store.get(this).clearUnstarred(), "已清除未收藏紀錄"))
                 .show());
+    section(inner, "App 更新");
+    settingRow(inner, "檢查新版本", UpdateChecker.cached(this).message, "backup", this::checkForUpdates);
+    settingRow(inner, UpdateChecker.enabled(this) ? "自動更新提醒：已開啟" : "開啟自動更新提醒",
+        "每天檢查 GitHub；不會自動安裝或上傳通知內容", "bell", this::updateReminderDialog);
+    settingRow(inner, "包含測試版", UpdateChecker.previews(this) ? "已開啟 · 可收到 Alpha / Beta 版本" : "只接收正式版本",
+        "settings", () -> {
+          UpdateChecker.setPreviews(this, !UpdateChecker.previews(this));
+          build();
+        });
+    settingRow(inner, "更新通知權限", getSystemService(android.app.NotificationManager.class).areNotificationsEnabled()
+        ? "點選管理更新通知頻道" : "尚未允許通知 · 仍可手動檢查", "bell", () -> {
+          Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+          intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+          startActivity(intent);
+        });
     section(inner, "關於 HuangNotify");
-    settingRow(inner, "隱私與記錄範圍", "沒有帳號、追蹤器或網路權限", "check", this::privacyDialog);
-    TextView about = u.text("HuangNotify 0.1.0\nMIT 開源授權 · 為每一則通知留一份紀錄", 12, u.muted, false);
+    settingRow(inner, "隱私與記錄範圍", "只為檢查版本連線，不上傳通知內容", "check", this::privacyDialog);
+    TextView about = u.text("HuangNotify " + BuildConfig.VERSION_NAME + "\nMIT 開源授權 · 為每一則通知留一份紀錄", 12, u.muted, false);
     about.setGravity(Gravity.CENTER);
     about.setPadding(0, u.d(24), 0, 0);
     inner.addView(about);
+  }
+
+  private void updateReminderDialog() {
+    if (UpdateChecker.enabled(this)) {
+      new AlertDialog.Builder(this).setTitle("關閉自動更新提醒？")
+          .setMessage("仍可在設定手動檢查新版本。")
+          .setNegativeButton("保留", null).setPositiveButton("關閉", (d, w) -> {
+            UpdateChecker.enable(this, false); build();
+          }).show();
+      return;
+    }
+    new AlertDialog.Builder(this).setTitle("有新版時提醒我")
+        .setMessage("約每天向 GitHub 檢查一次公開版本，GitHub 會收到一般連線資訊（例如 IP），不會收到通知內容。省電模式或網路狀態可能延後檢查。下載與安裝都由你確認。")
+        .setNegativeButton("稍後", null).setPositiveButton("開啟提醒", (d, w) -> {
+          UpdateChecker.enable(this, true);
+          if (android.os.Build.VERSION.SDK_INT >= 33
+              && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 8413);
+          UpdateChecker.check(this, false, result -> {});
+          build();
+        }).show();
+  }
+
+  private void checkForUpdates() {
+    toast("正在檢查 GitHub 版本…");
+    UpdateChecker.check(this, true, result -> runOnUiThread(() -> {
+      if (isFinishing() || isDestroyed()) return;
+      if (page.equals("settings")) build();
+      AlertDialog.Builder dialog = new AlertDialog.Builder(this)
+          .setTitle(result.available() ? "有新版本可以下載" : "版本檢查")
+          .setMessage(result.message + (result.available() ? "\n\n將開啟 GitHub 版本頁。下載後由 Android 確認安裝，既有紀錄可保留；更新前仍建議備份。" : ""))
+          .setNegativeButton("關閉", null);
+      if (result.available()) dialog.setPositiveButton("查看更新並下載", (d, w) -> {
+        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(result.url))); }
+        catch (Exception e) { toast("找不到可開啟網頁的瀏覽器"); }
+      });
+      dialog.show();
+    }));
   }
 
   private void section(LinearLayout parent, String title) {
@@ -973,7 +1028,7 @@ public final class MainActivity extends Activity {
         .setTitle("你的通知，由你保管")
         .setMessage(
             "• 所有紀錄保存在本機。\n"
-                + "• App 沒有網路權限、廣告或分析追蹤。\n"
+                + "• App 只向 GitHub 檢查公開版本，不上傳通知內容；沒有廣告或分析追蹤。\n"
                 + "• 不會代你清除通知或回覆訊息。\n"
                 + "• 系統自動備份已停用，只有你主動匯出的檔案會離開 App。\n\n"
                 + "第一版保存通知文字，不下載圖片或附件。來源 App 未提供的內容，以及系統遮蔽的敏感內容，無法還原。\n\n"

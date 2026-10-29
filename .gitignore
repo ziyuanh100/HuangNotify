@@ -7,3 +7,6 @@ local.properties
 *.iml
 *.hnbk
 *.hnjson
+*.p12
+*.pem
+*signing-private*

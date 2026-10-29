@@ -1,0 +1,2 @@
+HuangNotify official release certificate (v0.2.0-alpha.1 onward)
+SHA256: DA:46:1B:9D:A7:D0:7A:AF:03:05:AD:9E:4F:57:FB:D4:F0:D1:F3:E6:B0:3B:E7:F9:D4:C7:F3:EB:64:67:C5:E5
