@@ -3,8 +3,8 @@
 ## 自動檢查
 
 ```sh
-./gradlew testDebugUnitTest lintDebug assembleDebug assembleDebugAndroidTest
-./gradlew connectedDebugAndroidTest
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
+./gradlew :app:connectedDebugAndroidTest
 ```
 
 JVM 測試：繁體中文加密往返、每次加密隨機性、錯誤密碼、內容／標頭竄改、截斷、惡意 KDF 參數、弱密碼輸入、內容指紋分隔、搜尋萬用字元。
@@ -33,6 +33,8 @@ Android 整合測試：重複更新不增筆數、版本保存、移除保留內
 圖片／附件保存、自動備份、App 指紋鎖、資料庫額外加密、背景運作零漏記保證、正式穩定 release 簽章。測試 APK 與公開原始碼不代表完成所有品牌與版本相容性驗證。
 
 ## 通知端到端測試工具
+
+CI 與上述指令只驗證 `app` 模組。`probe` 刻意以 API 28 為 target，用於舊版模擬器的手動通知測試，不適用上架 target SDK 檢查。
 
 專案另含 `probe` 模組（獨立測試 APK，**不包含在 HuangNotify 安裝檔**）。可在模擬器使用：
 

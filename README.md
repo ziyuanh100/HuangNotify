@@ -21,7 +21,7 @@
 
 ## 安裝與使用
 
-1. 安裝自行建置的 APK，或 GitHub Actions 的 `HuangNotify-debug-apk` 測試產物。
+1. 從 [GitHub Releases](https://github.com/ziyuanh100/HuangNotify/releases) 下載測試 APK，或自行建置。
 2. 開啟 App，點選「開始保存你的通知」。
 3. 在系統通知存取權設定中啟用 **HuangNotify**。
 4. 返回 App，確認顯示「正在記錄」，再從其他 App 發送一則測試通知。
@@ -40,9 +40,9 @@
 - 原生 Java / Android Views / SQLite，沒有執行期第三方依賴
 
 ```sh
-./gradlew assembleDebug testDebugUnitTest lintDebug
+./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 # 啟動模擬器或連接已授權的測試手機後：
-./gradlew connectedDebugAndroidTest
+./gradlew :app:connectedDebugAndroidTest
 ```
 
 APK：`app/build/outputs/apk/debug/app-debug.apk`。
