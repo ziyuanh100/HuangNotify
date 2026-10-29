@@ -137,6 +137,7 @@ public final class MainActivity extends Activity {
     resumed = true;
     handler.removeCallbacks(poll);
     handler.post(poll);
+    if (page.equals("settings")) build();
     UpdateChecker.schedule(this);
     if (UpdateChecker.enabled(this)) UpdateChecker.check(this, false, result -> {});
   }
@@ -826,6 +827,15 @@ public final class MainActivity extends Activity {
           UpdateChecker.check(this, false, result -> {});
           build();
         }).show();
+  }
+
+  @Override
+  public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    if (requestCode == 8413) {
+      if (UpdateChecker.enabled(this)) UpdateChecker.check(this, false, result -> {});
+      if (page.equals("settings")) build();
+    }
   }
 
   private void checkForUpdates() {

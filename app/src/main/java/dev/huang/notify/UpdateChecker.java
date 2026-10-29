@@ -45,7 +45,7 @@ public final class UpdateChecker {
     if (!value) c.getSystemService(NotificationManager.class).cancel(NOTICE);
   }
   public static void setPreviews(Context c, boolean value) {
-    prefs(c).edit().putBoolean("previews", value).remove("tag").remove("url").remove("checked").apply();
+    prefs(c).edit().putBoolean("previews", value).remove("tag").remove("url").remove("checked").remove("attempt").remove("error").apply();
     c.getSystemService(NotificationManager.class).cancel(NOTICE);
   }
   public static void schedule(Context c) {
@@ -102,21 +102,28 @@ public final class UpdateChecker {
         if (!manual && !enabled(c)) { callback.done(cached(c)); return; }
         SharedPreferences p = prefs(c);
         long now = System.currentTimeMillis(), last = p.getLong("checked", 0);
+        long attempt = p.getLong("attempt", 0);
+        long retryInterval = manual ? 60000 : 60L * 60 * 1000;
+        if (now >= attempt && now - attempt < retryInterval && !p.getString("error", "").isEmpty()) {
+          callback.done(new Result("", "", p.getString("error", ""))); return;
+        }
         long interval = manual ? 60000 : DAY;
         if (now >= last && now - last < interval) {
           result = cached(c);
           if (!result.available()) result = new Result("", "", "最近已檢查，未發現新版本");
         } else {
           boolean includePreviews = previews(c);
+          p.edit().putLong("attempt", now).apply();
           result = fetch(includePreviews);
           // A user may disable checks or change channel while the request is running.
           if (includePreviews == previews(c) && (manual || enabled(c)))
-            p.edit().putString("tag", result.tag).putString("url", result.url).putLong("checked", now).apply();
+            p.edit().putString("tag", result.tag).putString("url", result.url).putLong("checked", now).remove("error").apply();
           else result = cached(c);
         }
         if (!manual && enabled(c)) notifyUpdate(c, result);
       } catch (Exception e) {
-        result = new Result("", "", "暫時無法檢查更新，請確認網路後再試；通知紀錄不受影響");
+        result = new Result("", "", "暫時無法檢查更新，請稍後確認網路再試；通知紀錄不受影響");
+        prefs(c).edit().putString("error", result.message).apply();
       }
       callback.done(result);
     });
@@ -145,6 +152,8 @@ public final class UpdateChecker {
     if (!result.available()) return;
     NotificationManager manager = c.getSystemService(NotificationManager.class);
     manager.createNotificationChannel(new NotificationChannel(CHANNEL, "App 版本更新", NotificationManager.IMPORTANCE_DEFAULT));
+    if (android.os.Build.VERSION.SDK_INT >= 33
+        && c.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) return;
     if (!manager.areNotificationsEnabled() || manager.getNotificationChannel(CHANNEL).getImportance() == NotificationManager.IMPORTANCE_NONE
         || result.tag.equals(prefs(c).getString("notified", ""))) return;
     Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(result.url));
