@@ -4,9 +4,6 @@ import android.test.ActivityInstrumentationTestCase2;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
-import android.graphics.Bitmap;
-import java.io.File;
-import java.io.FileOutputStream;
 
 @SuppressWarnings("deprecation")
 public class DialogTest extends ActivityInstrumentationTestCase2<MainActivity> {
@@ -74,20 +71,19 @@ public class DialogTest extends ActivityInstrumentationTestCase2<MainActivity> {
     assertTrue(dialog.getWindow().getDecorView().getHeight() <= activity.getResources().getDisplayMetrics().heightPixels);
   }
   private void capture(String name) throws Exception {
-    Bitmap bitmap = getInstrumentation().getUiAutomation().takeScreenshot();
-    assertNotNull(bitmap);
-    File dir = new File(activity.getExternalFilesDir(null), "ui-preview"); dir.mkdirs();
-    try (FileOutputStream out = new FileOutputStream(new File(dir, name))) { bitmap.compress(Bitmap.CompressFormat.PNG, 100, out); }
-    bitmap.recycle();
-    // Gradle uninstalls the test app after the suite, so preserve previews in shell-owned storage.
-    String command = "mkdir -p /data/local/tmp/huangnotify-ui-preview && cp "
-        + new File(dir, name).getAbsolutePath() + " /data/local/tmp/huangnotify-ui-preview/" + name;
+    // Shell-owned screenshots survive Gradle uninstalling the app after the suite.
+    String path = "/data/local/tmp/huangnotify-ui-preview/" + name;
+    String command = "mkdir -p /data/local/tmp/huangnotify-ui-preview && screencap -p " + path
+        + " && test -s " + path + " && echo captured";
     try (android.os.ParcelFileDescriptor descriptor = getInstrumentation().getUiAutomation().executeShellCommand(command);
-         java.io.FileInputStream input = new java.io.FileInputStream(descriptor.getFileDescriptor())) {
-      byte[] buffer = new byte[1024];
-      while (input.read(buffer) != -1) { /* Wait for the shell copy to finish. */ }
+         java.io.FileInputStream input = new java.io.FileInputStream(descriptor.getFileDescriptor());
+         java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+      byte[] buffer = new byte[1024]; int count;
+      while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+      assertEquals("captured", output.toString("UTF-8").trim());
     }
   }
+
   private View find(View v, String text) {
     if (v instanceof TextView && text.equals(((TextView) v).getText().toString())) return v;
     if (v instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) v).getChildCount(); i++) {
