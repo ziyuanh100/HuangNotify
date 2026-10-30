@@ -11,6 +11,11 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
     super(MainActivity.class);
   }
 
+  @Override protected void setUp() throws Exception {
+    super.setUp();
+    getInstrumentation().getTargetContext().getSharedPreferences("permission_guide", 0).edit().putInt("step", 3).commit();
+  }
+
   public void testNavigationAndEmptyState() throws Exception {
     MainActivity activity = getActivity();
     getInstrumentation().waitForIdleSync();

@@ -1,7 +1,6 @@
 package dev.huang.notify;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ComponentName;
@@ -36,6 +35,7 @@ import org.json.JSONObject;
 /** Native, dependency-light Android UI. Database and encryption never run on the UI thread. */
 public final class MainActivity extends Activity {
   private Ui u;
+  PermissionGuide permissionGuide;
   private LinearLayout root, content, nav, statusBox;
   private TextView statusTitle,
       statusBody,
@@ -86,6 +86,7 @@ public final class MainActivity extends Activity {
       setTheme(android.R.style.Theme_Material_NoActionBar);
     super.onCreate(state);
     u = new Ui(this);
+    permissionGuide = new PermissionGuide(this);
     if (state != null) {
       page = state.getString("page", "records");
       query = state.getString("query", "");
@@ -137,6 +138,7 @@ public final class MainActivity extends Activity {
     resumed = true;
     handler.removeCallbacks(poll);
     handler.post(poll);
+    handler.post(() -> { if (resumed) permissionGuide.resume(); });
     if (page.equals("settings")) build();
     UpdateChecker.schedule(this);
     if (UpdateChecker.enabled(this)) UpdateChecker.check(this, false, result -> {});
@@ -152,6 +154,7 @@ public final class MainActivity extends Activity {
   @Override
   protected void onDestroy() {
     handler.removeCallbacksAndMessages(null);
+    AppDialog.dismissAll(this);
     if (pendingExport != null) Arrays.fill(pendingExport, (byte) 0);
     super.onDestroy();
   }
@@ -309,7 +312,7 @@ public final class MainActivity extends Activity {
     filters.addView(timeFilter, fp);
     timeFilter.setOnClickListener(
         v ->
-            new AlertDialog.Builder(this)
+            new AppDialog.Builder(this)
                 .setTitle("日期範圍")
                 .setSingleChoiceItems(
                     new String[] {"所有日期", "今天"},
@@ -485,7 +488,7 @@ public final class MainActivity extends Activity {
       names[i + 1] = a[1] + " · " + a[2] + " 則";
       if (a[0].equals(filterPkg)) checked = i + 1;
     }
-    new AlertDialog.Builder(this)
+    new AppDialog.Builder(this)
         .setTitle("依 App 篩選")
         .setSingleChoiceItems(
             names,
@@ -685,13 +688,13 @@ public final class MainActivity extends Activity {
         body.addView(version);
       }
     }
-    AlertDialog dialog = sheet("通知詳情", body);
+    AppDialog dialog = sheet("通知詳情", body);
     u.gap(body, 20);
     TextView delete = u.button("刪除此筆紀錄", false);
     body.addView(delete);
     delete.setOnClickListener(
         v ->
-            new AlertDialog.Builder(this)
+            new AppDialog.Builder(this)
                 .setTitle("刪除這筆紀錄？")
                 .setMessage("會一併刪除更新歷程；不影響來源 App。此操作無法復原。")
                 .setNegativeButton("取消", null)
@@ -707,7 +710,7 @@ public final class MainActivity extends Activity {
   private void editNote(Record r) {
     EditText input = edit("輸入備註");
     input.setText(r.note);
-    new AlertDialog.Builder(this)
+    new AppDialog.Builder(this)
         .setTitle("通知備註")
         .setView(input)
         .setNegativeButton("取消", null)
@@ -736,6 +739,9 @@ public final class MainActivity extends Activity {
     LinearLayout inner = u.column();
     inner.setPadding(u.d(20), 0, u.d(20), 0);
     body.addView(inner);
+    section(inner, "權限與背景運作");
+    settingRow(inner, "權限設定精靈", "檢查通知存取權，依序完成必要設定", "check", () -> permissionGuide.restart());
+    settingRow(inner, "背景運作說明", "Samsung 與省電模式設定建議", "bell", () -> permissionGuide.backgroundHelp());
     section(inner, "記錄管理");
     settingRow(
         inner,
@@ -778,7 +784,7 @@ public final class MainActivity extends Activity {
         "保留收藏，刪除其餘通知與歷程",
         "settings",
         () ->
-            new AlertDialog.Builder(this)
+            new AppDialog.Builder(this)
                 .setTitle("清除所有未收藏紀錄？")
                 .setMessage("此操作無法復原。建議先建立備份。")
                 .setNegativeButton("取消", null)
@@ -810,14 +816,14 @@ public final class MainActivity extends Activity {
 
   private void updateReminderDialog() {
     if (UpdateChecker.enabled(this)) {
-      new AlertDialog.Builder(this).setTitle("關閉自動更新提醒？")
+      new AppDialog.Builder(this).setTitle("關閉自動更新提醒？")
           .setMessage("仍可在設定手動檢查新版本。")
           .setNegativeButton("保留", null).setPositiveButton("關閉", (d, w) -> {
             UpdateChecker.enable(this, false); build();
           }).show();
       return;
     }
-    new AlertDialog.Builder(this).setTitle("有新版時提醒我")
+    new AppDialog.Builder(this).setTitle("有新版時提醒我")
         .setMessage("約每天向 GitHub 檢查一次公開版本，GitHub 會收到一般連線資訊（例如 IP），不會收到通知內容。省電模式或網路狀態可能延後檢查。下載與安裝都由你確認。")
         .setNegativeButton("稍後", null).setPositiveButton("開啟提醒", (d, w) -> {
           UpdateChecker.enable(this, true);
@@ -843,7 +849,7 @@ public final class MainActivity extends Activity {
     UpdateChecker.check(this, true, result -> runOnUiThread(() -> {
       if (isFinishing() || isDestroyed()) return;
       if (page.equals("settings")) build();
-      AlertDialog.Builder dialog = new AlertDialog.Builder(this)
+      AppDialog.Builder dialog = new AppDialog.Builder(this)
           .setTitle(result.available() ? "有新版本可以下載" : "版本檢查")
           .setMessage(result.message + (result.available() ? "\n\n將開啟 GitHub 版本頁。下載後由 Android 確認安裝，既有紀錄可保留；更新前仍建議備份。" : ""))
           .setNegativeButton("關閉", null);
@@ -885,7 +891,7 @@ public final class MainActivity extends Activity {
   private void accessDialog() {
     String state =
         hasAccess() ? (CaptureService.connected ? "通知服務已連線。" : "已有權限，但服務尚未連線。 ") : "尚未授予通知存取權。";
-    new AlertDialog.Builder(this)
+    new AppDialog.Builder(this)
         .setTitle("讓通知留下紀錄")
         .setMessage(
             state
@@ -907,7 +913,7 @@ public final class MainActivity extends Activity {
             "開啟系統設定",
             (d, w) -> {
               try {
-                startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+                PermissionGuide.openListenerSettings(this);
               } catch (Exception e) {
                 toast("請手動開啟系統的通知存取權設定");
               }
@@ -929,7 +935,7 @@ public final class MainActivity extends Activity {
     String[] days = {"0", "7", "30", "90", "365"};
     String[] names = {"持續保留", "7 天", "30 天", "90 天", "365 天"};
     int checked = Arrays.asList(days).indexOf(retention);
-    new AlertDialog.Builder(this)
+    new AppDialog.Builder(this)
         .setTitle("保存多久的通知？")
         .setSingleChoiceItems(
             names,
@@ -951,7 +957,7 @@ public final class MainActivity extends Activity {
                   };
               if (which == 0) apply.run();
               else
-                new AlertDialog.Builder(this)
+                new AppDialog.Builder(this)
                     .setTitle("啟用定期清理？")
                     .setMessage("會立即刪除超過 " + days[which] + " 天且未收藏的紀錄。之後在 App 開啟或收到通知時清理。此操作無法復原。")
                     .setNegativeButton("取消", null)
@@ -979,7 +985,7 @@ public final class MainActivity extends Activity {
                     toast("收到通知後，來源 App 會出現在這裡");
                     return;
                   }
-                  new AlertDialog.Builder(this)
+                  new AppDialog.Builder(this)
                       .setTitle("要記錄哪些 App？")
                       .setMultiChoiceItems(names, checked, (d, i, value) -> checked[i] = value)
                       .setNegativeButton("取消", null)
@@ -1026,7 +1032,7 @@ public final class MainActivity extends Activity {
                 + "\n\n各 App 保存數量\n");
     for (String[] a : apps) b.append(a[1]).append("：").append(a[2]).append(" 則\n");
     b.append("\n統計只計入成功保存且尚未刪除的通知。同一筆通知的更新另存為版本。");
-    new AlertDialog.Builder(this)
+    new AppDialog.Builder(this)
         .setTitle("儲存概況")
         .setMessage(b.toString())
         .setPositiveButton("完成", null)
@@ -1034,7 +1040,7 @@ public final class MainActivity extends Activity {
   }
 
   private void privacyDialog() {
-    new AlertDialog.Builder(this)
+    new AppDialog.Builder(this)
         .setTitle("你的通知，由你保管")
         .setMessage(
             "• 所有紀錄保存在本機。\n"
@@ -1063,15 +1069,15 @@ public final class MainActivity extends Activity {
     EditText confirm = edit("再次輸入密碼");
     confirm.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
     body.addView(confirm);
-    AlertDialog dialog =
-        new AlertDialog.Builder(this)
+    AppDialog dialog =
+        new AppDialog.Builder(this)
             .setTitle("建立備份")
             .setView(body)
             .setNegativeButton("取消", null)
             .setNeutralButton(
                 "不加密",
                 (d, w) ->
-                    new AlertDialog.Builder(this)
+                    new AppDialog.Builder(this)
                         .setTitle("匯出未加密備份？")
                         .setMessage("能取得檔案的人都可以閱讀通知內容。請妥善保管。")
                         .setNegativeButton("取消", null)
@@ -1082,7 +1088,7 @@ public final class MainActivity extends Activity {
     dialog.setOnShowListener(
         d ->
             dialog
-                .getButton(AlertDialog.BUTTON_POSITIVE)
+                .getButton(AppDialog.BUTTON_POSITIVE)
                 .setOnClickListener(
                     v -> {
                       String a = password.getText().toString(), b = confirm.getText().toString();
@@ -1238,8 +1244,8 @@ public final class MainActivity extends Activity {
     if (isDestroyed()) return;
     EditText password = edit("輸入備份密碼");
     password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-    AlertDialog d =
-        new AlertDialog.Builder(this)
+    AppDialog d =
+        new AppDialog.Builder(this)
             .setTitle("解鎖備份")
             .setView(password)
             .setNegativeButton(
@@ -1300,12 +1306,12 @@ public final class MainActivity extends Activity {
                           15,
                           u.ink,
                           false));
-                  CheckBox settings = new CheckBox(this);
+                  AppDialog.Toggle settings = new AppDialog.Toggle(this);
                   settings.setText("同時還原保存期限與排除 App 設定");
                   settings.setTextColor(u.ink);
                   body.addView(settings);
-                  AlertDialog dialog =
-                      new AlertDialog.Builder(this)
+                  AppDialog dialog =
+                      new AppDialog.Builder(this)
                           .setTitle("確認還原備份")
                           .setView(body)
                           .setNegativeButton("取消", (d, w) -> finishBackup())
@@ -1322,7 +1328,7 @@ public final class MainActivity extends Activity {
                                             () -> {
                                               finishBackup();
                                               refresh();
-                                              new AlertDialog.Builder(this)
+                                              new AppDialog.Builder(this)
                                                   .setTitle("還原完成")
                                                   .setMessage(
                                                       "新增 "
@@ -1374,27 +1380,13 @@ public final class MainActivity extends Activity {
 
   private LinearLayout dialogBody() {
     LinearLayout b = u.column();
-    b.setPadding(u.d(24), u.d(16), u.d(24), u.d(20));
+    b.setPadding(0, u.d(4), 0, u.d(8));
     b.setBackgroundColor(u.surface);
     return b;
   }
 
-  private AlertDialog sheet(String title, LinearLayout body) {
-    ScrollView scroll = new ScrollView(this);
-    scroll.addView(body);
-    AlertDialog d =
-        new AlertDialog.Builder(this)
-            .setTitle(title)
-            .setView(scroll)
-            .setPositiveButton("完成", null)
-            .create();
-    d.show();
-    if (d.getWindow() != null) {
-      d.getWindow().setBackgroundDrawable(u.shape(u.surface, 24));
-      d.getWindow().setLayout(-1, (int) (getResources().getDisplayMetrics().heightPixels * .85));
-      d.getWindow().setGravity(Gravity.BOTTOM);
-    }
-    return d;
+  private AppDialog sheet(String title, LinearLayout body) {
+    return new AppDialog.Builder(this).setTitle(title).setView(body).setPositiveButton("完成", null).show();
   }
 
   private EditText edit(String hint) {
@@ -1404,7 +1396,8 @@ public final class MainActivity extends Activity {
     e.setHint(hint);
     e.setTextSize(15);
     e.setPadding(u.d(16), u.d(12), u.d(16), u.d(12));
-    e.setBackgroundTintList(ColorStateList.valueOf(u.accent));
+    e.setBackground(u.shape(u.pale, 14));
+    e.setMinHeight(u.d(52));
     return e;
   }
 
