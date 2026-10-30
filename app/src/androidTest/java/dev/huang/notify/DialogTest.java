@@ -79,6 +79,14 @@ public class DialogTest extends ActivityInstrumentationTestCase2<MainActivity> {
     File dir = new File(activity.getExternalFilesDir(null), "ui-preview"); dir.mkdirs();
     try (FileOutputStream out = new FileOutputStream(new File(dir, name))) { bitmap.compress(Bitmap.CompressFormat.PNG, 100, out); }
     bitmap.recycle();
+    // Gradle uninstalls the test app after the suite, so preserve previews in shell-owned storage.
+    String command = "mkdir -p /data/local/tmp/huangnotify-ui-preview && cp "
+        + new File(dir, name).getAbsolutePath() + " /data/local/tmp/huangnotify-ui-preview/" + name;
+    try (android.os.ParcelFileDescriptor descriptor = getInstrumentation().getUiAutomation().executeShellCommand(command);
+         java.io.FileInputStream input = new java.io.FileInputStream(descriptor.getFileDescriptor())) {
+      byte[] buffer = new byte[1024];
+      while (input.read(buffer) != -1) { /* Wait for the shell copy to finish. */ }
+    }
   }
   private View find(View v, String text) {
     if (v instanceof TextView && text.equals(((TextView) v).getText().toString())) return v;

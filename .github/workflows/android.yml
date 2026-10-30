@@ -65,7 +65,7 @@ jobs:
           disable-animations: true
           script: |
             ./gradlew :app:connectedDebugAndroidTest
-            adb pull /sdcard/Android/data/dev.huang.notify/files/ui-preview ui-preview
+            adb pull /data/local/tmp/huangnotify-ui-preview ui-preview
       - uses: actions/upload-artifact@v4
         if: always()
         with:
