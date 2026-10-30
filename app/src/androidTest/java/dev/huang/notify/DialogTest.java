@@ -45,8 +45,9 @@ public class DialogTest extends ActivityInstrumentationTestCase2<MainActivity> {
     getInstrumentation().runOnMainSync(() -> {
       dialog = new AppDialog.Builder(activity).setTitle("建立備份").setPositiveButton("加密匯出", null).create();
       dialog.setOnShowListener(d -> dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v -> {})); dialog.show();
-      dialog.getButton(AppDialog.BUTTON_POSITIVE).performClick();
     });
+    getInstrumentation().waitForIdleSync();
+    getInstrumentation().runOnMainSync(() -> dialog.getButton(AppDialog.BUTTON_POSITIVE).performClick());
     assertTrue(dialog.isShowing());
   }
   public void testFirstUseGuideCanBeSkippedWithoutReprompt() throws Exception {
