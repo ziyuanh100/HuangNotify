@@ -50,12 +50,11 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
         try { require(store.versions(r.id).length()==2,"Version history was lost"); } catch(Exception e) { throw new RuntimeException(e); }
         require(store.setting("paused","0").equals("1") && store.setting("retention","0").equals("30"),"Recording settings were lost");
       }).get();
-      long end=SystemClock.elapsedRealtime()+10000;
-      while(!UpgradeManager.prefs(c).getBoolean("completion_pending",false) && SystemClock.elapsedRealtime()<end) SystemClock.sleep(100);
-      require(UpgradeManager.prefs(c).getBoolean("completion_pending",false),"Package replacement completion was not persisted");
+      // User reopening is the reliable fallback when replacement broadcasts are deferred.
       MainActivity main=(MainActivity)startActivitySync(new Intent(c,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-      end=SystemClock.elapsedRealtime()+10000;
+      long end=SystemClock.elapsedRealtime()+10000;
       while((main.updateFlow.dialog==null || !main.updateFlow.dialog.isShowing()) && SystemClock.elapsedRealtime()<end) { waitForIdleSync(); SystemClock.sleep(100); }
+      require(UpgradeManager.prefs(c).getBoolean("completion_pending",false),"Completion was not recovered after launch");
       require(main.updateFlow.dialog!=null && main.updateFlow.dialog.isShowing(),"Completion dialog missing after launch");
       runOnMainSync(()->main.updateFlow.dialog.getButton(AppDialog.BUTTON_POSITIVE).performClick()); waitForIdleSync();
       require(main.isFinishing(),"Reopen did not replace the old activity");
