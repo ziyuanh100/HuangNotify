@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Recurring portable encrypted backups. Old files are pruned only after read-back verification. */
 final class AutoBackup {
   static final int JOB = 8420;
+  private static final java.util.concurrent.ExecutorService IO=java.util.concurrent.Executors.newSingleThreadExecutor();
   private static final AtomicBoolean RUNNING = new AtomicBoolean();
   interface Callback { void done(String message); }
   static SharedPreferences prefs(Context c) { return c.getSharedPreferences("auto_backup", 0); }
@@ -47,7 +48,7 @@ final class AutoBackup {
   static void run(Context context, boolean force, AtomicBoolean cancelled, Callback callback) {
     Context c = context.getApplicationContext();
     if (!RUNNING.compareAndSet(false, true)) { callback.done("已有備份作業進行中"); return; }
-    Store.IO.execute(() -> {
+    IO.execute(() -> {
       byte[] raw = null, encrypted = null; char[] password = null; String message;
       try {
         SharedPreferences p = prefs(c);
@@ -56,7 +57,7 @@ final class AutoBackup {
         if (!force && elapsed >= 0 && elapsed < UpdateChecker.DAY) { callback.done("今天已成功備份"); return; }
         String tree = p.getString("tree", ""), secret = p.getString("secret", "");
         password = DeviceSecret.unwrap(secret);
-        raw = Store.get(c).exportBackup().toString().getBytes(StandardCharsets.UTF_8);
+        raw = Store.IO.submit(() -> Store.get(c).exportBackup().toString().getBytes(StandardCharsets.UTF_8)).get();
         encrypted = BackupCrypto.encrypt(raw, password);
         if (cancelled.get() || !enabled(c)) throw new InterruptedIOException();
         String prefix = "HuangNotify_auto_" + p.getString("owner", "") + "_";

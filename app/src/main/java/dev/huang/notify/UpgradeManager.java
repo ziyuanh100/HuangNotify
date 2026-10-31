@@ -43,6 +43,10 @@ final class UpgradeManager {
         .setExtras(data).setPersisted(true).build());
     status(c, scheduled == JobScheduler.RESULT_SUCCESS ? automatic ? "等待 Wi-Fi 等非計量網路下載更新" : "準備下載更新…" : "無法排程下載，請重試");
   }
+  static boolean allowedVersion(Context c,String tag) {
+    ReleaseVersion version=ReleaseVersion.parse(tag), current=ReleaseVersion.parse(BuildConfig.VERSION_NAME);
+    return version!=null && current!=null && version.compareTo(current)>0 && (UpdateChecker.previews(c) || !version.isPreview());
+  }
   static boolean allowedDownload(String url) {
     try { URI u = new URI(url); return "https".equals(u.getScheme()) && "github.com".equals(u.getHost()) && u.getPort() == -1
         && u.getRawUserInfo() == null && u.getRawQuery() == null && u.getRawFragment() == null
@@ -55,7 +59,7 @@ final class UpgradeManager {
   }
   static void download(Context c, PersistableBundle data, AtomicBoolean cancelled) throws Exception {
     String source = data.getString("url", ""), expected = data.getString("sha", ""), tag = data.getString("tag", ""); long size = data.getLong("size");
-    if (!allowedDownload(source) || !expected.matches("[a-f0-9]{64}") || size <= 0 || size > MAX_APK) throw new IOException();
+    if (!allowedVersion(c,tag) || !allowedDownload(source) || !expected.matches("[a-f0-9]{64}") || size <= 0 || size > MAX_APK) throw new IOException();
     File temp = new File(c.getFilesDir(), "update.part"); HttpURLConnection connection = null;
     try {
       URL url = new URL(source);
@@ -80,7 +84,7 @@ final class UpgradeManager {
           if (percent / 5 != lastPercent / 5 || lastPercent < 0) { lastPercent = percent; status(c, "正在下載更新 " + percent + "%"); notice(c, "正在下載更新", percent + "%", null); }
         }
       }
-      if (received != size || cancelled.get()) throw new IOException();
+      if (received != size || cancelled.get() || !allowedVersion(c,tag)) throw new IOException();
       verify(c, temp, expected, tag);
       if (apk(c).exists() && !apk(c).delete()) throw new IOException();
       if (!temp.renameTo(apk(c))) throw new IOException();
@@ -117,6 +121,7 @@ final class UpgradeManager {
     IO.execute(() -> {
       PackageInstaller installer = c.getPackageManager().getPackageInstaller(); int sessionId = -1;
       try {
+        if (!allowedVersion(c,prefs(c).getString("tag",""))) throw new SecurityException("更新頻道已變更或版本過舊");
         if (!prefs(c).getBoolean("ready",false)) throw new IOException("請先下載更新");
         if (!c.getPackageManager().canRequestPackageInstalls()) { status(c,"請先允許 HuangNotify 安裝更新"); return; }
         if (silent && (!automatic(c) || !autoInstall(c))) return;

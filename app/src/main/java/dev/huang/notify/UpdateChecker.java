@@ -50,6 +50,12 @@ public final class UpdateChecker {
     if (!value) { c.getSystemService(NotificationManager.class).cancel(NOTICE); UpgradeManager.configure(c,false,false); }
   }
   public static void setPreviews(Context c, boolean value) {
+    c.getSystemService(JobScheduler.class).cancel(UpgradeManager.JOB);
+    ReleaseVersion downloaded=ReleaseVersion.parse(UpgradeManager.prefs(c).getString("tag",""));
+    if (!value && downloaded!=null && downloaded.isPreview()) {
+      UpgradeManager.prefs(c).edit().putBoolean("ready",false).apply();
+      UpgradeManager.status(c,"已切換正式版頻道，請重新檢查更新");
+    }
     prefs(c).edit().putBoolean("previews", value).remove("tag").remove("url").remove("checked").remove("attempt").remove("error").apply();
     c.getSystemService(NotificationManager.class).cancel(NOTICE);
   }
