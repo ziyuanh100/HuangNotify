@@ -35,6 +35,10 @@ import org.json.JSONObject;
 /** Native, dependency-light Android UI. Database and encryption never run on the UI thread. */
 public final class MainActivity extends Activity {
   private Ui u;
+  private final List<RecordSwitch> recordSwitches = new ArrayList<>();
+  private final List<TextView> recordStates = new ArrayList<>();
+  private TextView backupStatus, upgradeStatus;
+  private boolean recordingLoaded, recordingSaving;
   PermissionGuide permissionGuide;
   private LinearLayout root, content, nav, statusBox;
   private TextView statusTitle,
@@ -120,6 +124,9 @@ public final class MainActivity extends Activity {
         });
     if (android.os.Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
     setContentView(root);
+    if (getIntent().getBooleanExtra("open_updates",false)) page="settings";
+    UpgradeManager.reconcile(this);
+    AutoBackup.schedule(this);
     build();
     Store.IO.execute(
         () -> {
@@ -132,6 +139,11 @@ public final class MainActivity extends Activity {
         });
   }
 
+  @Override protected void onNewIntent(Intent intent) {
+    super.onNewIntent(intent); setIntent(intent);
+    if (intent.getBooleanExtra("open_updates",false)) { page="settings"; build(); refresh(); }
+  }
+
   @Override
   protected void onResume() {
     super.onResume();
@@ -140,6 +152,8 @@ public final class MainActivity extends Activity {
     handler.post(poll);
     handler.post(() -> { if (resumed) permissionGuide.resume(); });
     if (page.equals("settings")) build();
+    AutoBackup.schedule(this);
+    UpgradeManager.reconcile(this);
     UpdateChecker.schedule(this);
     if (UpdateChecker.enabled(this)) UpdateChecker.check(this, false, result -> {});
   }
@@ -171,6 +185,7 @@ public final class MainActivity extends Activity {
 
   private void build() {
     root.removeAllViews();
+    recordSwitches.clear(); recordStates.clear(); backupStatus=null; upgradeStatus=null;
     content = u.column();
     root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
     if (page.equals("settings")) buildSettings();
@@ -249,8 +264,10 @@ public final class MainActivity extends Activity {
     statusTitle = u.text("確認記錄狀態…", 15, u.accent, true);
     statusBody = u.text("", 12, u.muted, false);
     statusBody.setPadding(0, u.d(5), 0, 0);
-    statusBox.addView(statusTitle);
-    statusBox.addView(statusBody);
+    LinearLayout statusRow=u.row(), statusText=u.column();
+    statusText.addView(statusTitle); statusText.addView(statusBody);
+    statusRow.addView(statusText,new LinearLayout.LayoutParams(0,-2,1));
+    statusRow.addView(recordSwitch()); statusBox.addView(statusRow);
     header.addView(statusBox);
     statusBox.setOnClickListener(v -> accessDialog());
     u.gap(header, 12);
@@ -383,7 +400,52 @@ public final class MainActivity extends Activity {
     return t;
   }
 
+  private String recordingState() {
+    if (!recordingLoaded) return "讀取記錄設定…";
+    if (paused.equals("1")) return "已暫停 · 原有紀錄保留";
+    if (!hasAccess()) return "尚未授權 · 開啟通知存取權後才能記錄";
+    if (!Store.error.isEmpty()) return "需要處理 · " + Store.error;
+    return CaptureService.connected ? "正在記錄 · 開關啟用" : "服務未連線 · 點選通知存取權重新連線";
+  }
+  private RecordSwitch recordSwitch() {
+    RecordSwitch control=new RecordSwitch(this);
+    control.setContentDescription("記錄通知"); control.setChecked(!paused.equals("1"));
+    control.setEnabled(recordingLoaded && !recordingSaving);
+    control.setOnCheckedChangeListener((button,checked) -> changeRecording(checked));
+    recordSwitches.add(control); return control;
+  }
+  private void updateRecordingControls() {
+    for (RecordSwitch control:recordSwitches) {
+      control.setOnCheckedChangeListener(null); control.setChecked(!paused.equals("1"));
+      control.setEnabled(recordingLoaded && !recordingSaving);
+      if (android.os.Build.VERSION.SDK_INT>=30) control.setStateDescription(recordingSaving ? "正在儲存" : recordingState());
+      control.setOnCheckedChangeListener((button,checked) -> changeRecording(checked));
+    }
+    for (TextView state:recordStates) state.setText(recordingSaving?"正在儲存設定…":recordingState());
+    if (backupStatus!=null) backupStatus.setText(AutoBackup.status(this));
+    if (upgradeStatus!=null) upgradeStatus.setText(UpgradeManager.status(this));
+  }
+  private void changeRecording(boolean enabled) {
+    if (!recordingLoaded || recordingSaving) { updateRecordingControls(); return; }
+    recordingSaving=true; updateRecordingControls();
+    Store.IO.execute(() -> {
+      boolean success;
+      try { Store.get(this).putSetting("paused",enabled?"0":"1"); success=true; } catch(Exception e) { success=false; }
+      final boolean saved=success;
+      runOnUiThread(() -> {
+        recordingSaving=false;
+        if (saved) paused=enabled?"0":"1";
+        if (isDestroyed()) return;
+        updateHeader(); toast(saved?(enabled?"已啟用記錄":"已暫停記錄，原有紀錄保留"):"設定未儲存，請重試");
+        if (saved && enabled) {
+          if (!hasAccess()) permissionGuide.restart();
+          else if (!CaptureService.connected) NotificationListenerService.requestRebind(new ComponentName(this,CaptureService.class));
+        }
+      });
+    });
+  }
   private void updateHeader() {
+    updateRecordingControls();
     if (page.equals("settings") || statusTitle == null) return;
     boolean access = hasAccess();
     String title, body;
@@ -439,7 +501,8 @@ public final class MainActivity extends Activity {
                       !paused.equals(p) || !retention.equals(r) || counts[0] != numbers[0];
                   counts = numbers;
                   apps = sources;
-                  paused = p;
+                  if (!recordingSaving) paused = p;
+                  recordingLoaded=true;
                   retention = r;
                   lastSaved = last;
                   if (settingsChanged && page.equals("settings")) build();
@@ -749,19 +812,12 @@ public final class MainActivity extends Activity {
         hasAccess() ? "已授權 · 點選檢查記錄狀態" : "尚未開啟 · 開始記錄前需要授權",
         "bell",
         this::accessDialog);
-    settingRow(
-        inner,
-        paused.equals("1") ? "繼續記錄通知" : "暫停記錄通知",
-        paused.equals("1") ? "暫停期間的通知可能無法補回" : "保留既有紀錄，停止保存新的通知",
-        "check",
-        () -> {
-          String value = paused.equals("1") ? "0" : "1";
-          mutate(
-              () -> Store.get(this).putSetting("paused", value),
-              value.equals("1") ? "已暫停記錄" : "已恢復記錄");
-          paused = value;
-          build();
-        });
+    LinearLayout recording=u.row(); recording.setPadding(u.d(16),u.d(12),u.d(8),u.d(12));
+    recording.setBackground(u.shape(u.surface,18));
+    LinearLayout recordingText=u.column(); recordingText.addView(u.text("記錄通知",16,u.ink,true));
+    TextView state=u.text(recordingState(),12,u.muted,false); recordStates.add(state); recordingText.addView(state);
+    recording.addView(recordingText,new LinearLayout.LayoutParams(0,-2,1)); recording.addView(recordSwitch());
+    inner.addView(recording); u.gap(inner,8);
     settingRow(inner, "選擇記錄來源", "排除不想保存的 App", "settings", this::manageApps);
     settingRow(
         inner,
@@ -771,6 +827,8 @@ public final class MainActivity extends Activity {
         this::chooseRetention);
     section(inner, "備份與資料");
     settingRow(inner, "建立備份", "匯出紀錄與歷程，可使用密碼加密", "backup", this::exportDialog);
+    settingRow(inner, "自動加密備份", "每日備份至指定資料夾，可設定保留份數", "backup", this::autoBackupDialog);
+    backupStatus=u.text(AutoBackup.status(this),12,u.muted,false); inner.addView(backupStatus);
     settingRow(inner, "還原備份", "預覽後合併匯入，略過重複紀錄", "backup", this::chooseImport);
     settingRow(
         inner,
@@ -794,12 +852,15 @@ public final class MainActivity extends Activity {
     section(inner, "App 更新");
     settingRow(inner, "檢查新版本", UpdateChecker.cached(this).message, "backup", this::checkForUpdates);
     settingRow(inner, UpdateChecker.enabled(this) ? "自動更新提醒：已開啟" : "開啟自動更新提醒",
-        "每天檢查 GitHub；不會自動安裝或上傳通知內容", "bell", this::updateReminderDialog);
+        "每天檢查 GitHub；下載與安裝偏好可另行設定", "bell", this::updateReminderDialog);
     settingRow(inner, "包含測試版", UpdateChecker.previews(this) ? "已開啟 · 可收到 Alpha / Beta 版本" : "只接收正式版本",
         "settings", () -> {
           UpdateChecker.setPreviews(this, !UpdateChecker.previews(this));
           build();
         });
+    settingRow(inner, "更新下載與安裝", "自動下載、非計量網路與安裝偏好", "backup", this::upgradeOptions);
+    settingRow(inner, "安裝已下載更新", "驗證通過後交由 Android 處理", "check", this::installDownloaded);
+    upgradeStatus=u.text(UpgradeManager.status(this),12,u.muted,false); inner.addView(upgradeStatus);
     settingRow(inner, "更新通知權限", getSystemService(android.app.NotificationManager.class).areNotificationsEnabled()
         ? "點選管理更新通知頻道" : "尚未允許通知 · 仍可手動檢查", "bell", () -> {
           Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
@@ -807,11 +868,83 @@ public final class MainActivity extends Activity {
           startActivity(intent);
         });
     section(inner, "關於 HuangNotify");
-    settingRow(inner, "隱私與記錄範圍", "只為檢查版本連線，不上傳通知內容", "check", this::privacyDialog);
+    settingRow(inner, "隱私與記錄範圍", "版本檢查與更新下載連線，通知內容不會上傳", "check", this::privacyDialog);
     TextView about = u.text("HuangNotify " + BuildConfig.VERSION_NAME + "\nMIT 開源授權 · 為每一則通知留一份紀錄", 12, u.muted, false);
     about.setGravity(Gravity.CENTER);
     about.setPadding(0, u.d(24), 0, 0);
     inner.addView(about);
+  }
+
+  private void autoBackupDialog() {
+    LinearLayout body=sheet(); body.addView(u.text(AutoBackup.status(this),14,u.muted,false));
+    u.gap(body,12); body.addView(u.text("備份使用可攜式密碼加密，換手機仍可還原。請自行記住密碼。密碼會以本機安全金鑰保護，供每日備份使用。\n\n指定資料夾若由雲端服務提供，檔案會存到該服務。低電量、省電、強制停止或資料夾失聯可能延後備份。",14,u.muted,false));
+    if (AutoBackup.enabled(this)) { TextView disable=u.button("停用自動備份",false); body.addView(disable);
+      disable.setOnClickListener(v->{ AutoBackup.disable(this); AppDialog.dismissAll(this); build(); toast("已停用，既有備份保留"); }); }
+    AppDialog.Builder dialog=new AppDialog.Builder(this).setTitle("自動加密備份").setView(body).setNegativeButton("關閉",null)
+      .setPositiveButton("選擇資料夾與設定密碼",(d,w)->{
+        try { startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION),103); }
+        catch(Exception e) { toast("無法開啟資料夾選擇器"); }
+      });
+    if (AutoBackup.enabled(this)) dialog.setNeutralButton("立即備份",(d,w)->runAutoBackup());
+    dialog.show();
+  }
+  private void autoBackupPassword(Uri tree) {
+    LinearLayout body=sheet();
+    body.addView(u.text("每天加密備份。新檔成功寫入並驗證後，才清理超過保留份數的本 App 自動備份。手動備份與其他檔案不會清除。\n請記住密碼，遺失後無法還原。",14,u.muted,false));
+    EditText password=edit("備份密碼（至少 8 個字元）"), confirm=edit("再次輸入密碼");
+    password.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD); confirm.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
+    body.addView(password); body.addView(confirm); int[] keep={AutoBackup.keep(this)};
+    TextView retentionButton=u.button("保留 "+keep[0]+" 份",false); body.addView(retentionButton);
+    retentionButton.setOnClickListener(v->new AppDialog.Builder(this).setTitle("保留幾份自動備份？")
+      .setSingleChoiceItems(new String[]{"3 份","7 份","14 份","30 份"},keep[0]==3?0:keep[0]==7?1:keep[0]==14?2:3,(d,i)->{ keep[0]=new int[]{3,7,14,30}[i]; retentionButton.setText("保留 "+keep[0]+" 份"); d.dismiss(); }).show());
+    AppDialog dialog=new AppDialog.Builder(this).setTitle("設定自動備份").setView(body).setNegativeButton("取消",null).setPositiveButton("開啟並備份",null).create();
+    dialog.setOnShowListener(d->dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+      if (password.length()<8) { password.setError("至少 8 個字元"); return; }
+      if (!password.getText().toString().equals(confirm.getText().toString())) { confirm.setError("兩次密碼不相同"); return; }
+      char[] secret=password.getText().toString().toCharArray(); password.setText(""); confirm.setText(""); dialog.dismiss();
+      Store.IO.execute(()->{
+        boolean saved=false;
+        try { AutoBackup.configure(this,tree,secret,keep[0]); saved=true; } catch(Exception e) { }
+        finally { Arrays.fill(secret,'\0'); }
+        boolean success=saved; runOnUiThread(()->{ if (isDestroyed()) return; if (success) { build(); runAutoBackup(); } else toast("無法保護備份密碼，請重試"); });
+      });
+    })); dialog.show();
+  }
+  private void runAutoBackup() {
+    toast("正在建立加密備份…");
+    AutoBackup.run(this,true,new java.util.concurrent.atomic.AtomicBoolean(),message->runOnUiThread(()->{ if (!isDestroyed()) { toast(message); if (page.equals("settings")) build(); } }));
+  }
+  private void upgradeOptions() {
+    LinearLayout body=sheet();
+    body.addView(u.text("開啟後會自動檢查 GitHub，並在 Wi-Fi 等非計量網路下載新版。下載完成會驗證簽章、套件名稱、版本與完整性。\n\n自動安裝需 Android 12 以上及安裝權限；系統仍可能要求確認。自動更新期間 App 可能短暫重啟。",14,u.muted,false));
+    AppDialog.Toggle download=new AppDialog.Toggle(this), install=new AppDialog.Toggle(this);
+    download.setText("自動下載更新（非計量網路）"); download.setChecked(UpgradeManager.automatic(this)); body.addView(download);
+    install.setText("系統允許時自動安裝"); install.setChecked(UpgradeManager.autoInstall(this)); body.addView(install);
+    install.setEnabled(android.os.Build.VERSION.SDK_INT>=31);
+    if (android.os.Build.VERSION.SDK_INT<31) body.addView(u.text("此 Android 版本需手動確認安裝。",13,u.muted,false));
+    new AppDialog.Builder(this).setTitle("更新下載與安裝").setView(body).setNegativeButton("取消",null).setPositiveButton("儲存設定",(d,w)->{
+      if (install.isChecked() && !download.isChecked()) { toast("自動安裝需同時開啟自動下載"); return; }
+      UpgradeManager.configure(this,download.isChecked(),install.isChecked());
+      if (download.isChecked()) { UpdateChecker.enable(this,true); UpdateChecker.check(this,false,r->{}); }
+      if (download.isChecked() && install.isChecked() && !getPackageManager().canRequestPackageInstalls()) openInstallPermission();
+      build(); toast("更新偏好已儲存");
+    }).show();
+  }
+  private void openInstallPermission() {
+    try { startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:"+getPackageName()))); }
+    catch(Exception e) { toast("請在系統設定允許 HuangNotify 安裝更新"); }
+  }
+  private void installDownloaded() {
+    if (!UpgradeManager.prefs(this).getBoolean("ready",false)) { toast("尚無已驗證的更新，請先檢查新版本"); return; }
+    if (!getPackageManager().canRequestPackageInstalls()) {
+      new AppDialog.Builder(this).setTitle("允許安裝 App 更新").setMessage("接著開啟 Android 設定，請允許 HuangNotify 安裝更新，返回後再點選安裝。只安裝與目前 App 同簽章的官方新版。")
+        .setNegativeButton("稍後",null).setPositiveButton("前往設定",(d,w)->openInstallPermission()).show(); return;
+    }
+    Intent confirmation=UpgradeManager.confirmation;
+    if (confirmation!=null) {
+      try { startActivity(confirmation); return; } catch(Exception e) { UpgradeManager.confirmation=null; }
+    }
+    UpgradeManager.install(this,false); toast("正在驗證並準備安裝…");
   }
 
   private void updateReminderDialog() {
@@ -824,7 +957,7 @@ public final class MainActivity extends Activity {
       return;
     }
     new AppDialog.Builder(this).setTitle("有新版時提醒我")
-        .setMessage("約每天向 GitHub 檢查一次公開版本，GitHub 會收到一般連線資訊（例如 IP），不會收到通知內容。省電模式或網路狀態可能延後檢查。下載與安裝都由你確認。")
+        .setMessage("約每天向 GitHub 檢查一次公開版本，GitHub 會收到一般連線資訊（例如 IP），不會收到通知內容。省電模式或網路狀態可能延後檢查。下載與安裝可在「更新下載與安裝」另行設定。")
         .setNegativeButton("稍後", null).setPositiveButton("開啟提醒", (d, w) -> {
           UpdateChecker.enable(this, true);
           if (android.os.Build.VERSION.SDK_INT >= 33
@@ -851,12 +984,12 @@ public final class MainActivity extends Activity {
       if (page.equals("settings")) build();
       AppDialog.Builder dialog = new AppDialog.Builder(this)
           .setTitle(result.available() ? "有新版本可以下載" : "版本檢查")
-          .setMessage(result.message + (result.available() ? "\n\n將開啟 GitHub 版本頁。下載後由 Android 確認安裝，既有紀錄可保留；更新前仍建議備份。" : ""))
+          .setMessage(result.message + (result.available() ? "\n\n可直接下載至 App，通過完整性與簽章驗證後再安裝。更新前建議先完成備份。" : ""))
           .setNegativeButton("關閉", null);
-      if (result.available()) dialog.setPositiveButton("查看更新並下載", (d, w) -> {
-        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(result.url))); }
-        catch (Exception e) { toast("找不到可開啟網頁的瀏覽器"); }
-      });
+      if (result.available()) {
+        if (result.installable()) dialog.setPositiveButton("下載更新", (d,w) -> { UpgradeManager.request(this,result,false); build(); });
+        dialog.setNeutralButton("查看版本說明",(d,w)->{ try { startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(result.url))); } catch(Exception e) { toast("無法開啟版本頁"); } });
+      }
       dialog.show();
     }));
   }
@@ -1046,7 +1179,7 @@ public final class MainActivity extends Activity {
             "• 所有紀錄保存在本機。\n"
                 + "• App 只向 GitHub 檢查公開版本，不上傳通知內容；沒有廣告或分析追蹤。\n"
                 + "• 不會代你清除通知或回覆訊息。\n"
-                + "• 系統自動備份已停用，只有你主動匯出的檔案會離開 App。\n\n"
+                + "• 系統自動備份已停用，手動匯出與選用自動備份會寫入你選擇的位置；若選雲端資料夾，檔案會由該服務保存。\n\n"
                 + "第一版保存通知文字，不下載圖片或附件。來源 App 未提供的內容，以及系統遮蔽的敏感內容，無法還原。\n\n"
                 + "首次連線會補存目前仍在通知列的通知。服務中斷期間已消失的通知可能漏記；重連時會核對仍存在的通知。\n\n"
                 + "解除安裝或清除 App 資料會刪除紀錄，請先匯出備份。")
@@ -1180,6 +1313,14 @@ public final class MainActivity extends Activity {
       return;
     }
     Uri uri = data.getData();
+    if (request == 103) {
+      try {
+        int flags=data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        getContentResolver().takePersistableUriPermission(uri,flags);
+        autoBackupPassword(uri);
+      } catch(Exception e) { toast("無法保留資料夾權限，請重新選擇"); }
+      return;
+    }
     if (request == 101) {
       if (pendingExport == null) {
         finishBackup();

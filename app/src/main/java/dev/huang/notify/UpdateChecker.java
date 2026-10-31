@@ -31,8 +31,13 @@ public final class UpdateChecker {
   private static final ExecutorService IO = Executors.newSingleThreadExecutor();
   public interface Callback { void done(Result result); }
   public static final class Result {
-    public final String tag, url, message;
-    Result(String tag, String url, String message) { this.tag = tag; this.url = url; this.message = message; }
+    public final String tag, url, message, apk, sha256;
+    public final long size;
+    Result(String tag, String url, String message) { this(tag,url,message,"","",0); }
+    Result(String tag, String url, String message, String apk, String sha256, long size) {
+      this.tag=tag; this.url=url; this.message=message; this.apk=apk; this.sha256=sha256; this.size=size;
+    }
+    public boolean installable() { return available() && UpgradeManager.allowedDownload(apk) && sha256.matches("[a-f0-9]{64}") && size > 0 && size <= UpgradeManager.MAX_APK; }
     public boolean available() { return !tag.isEmpty(); }
   }
   private UpdateChecker() {}
@@ -42,7 +47,7 @@ public final class UpdateChecker {
   public static void enable(Context c, boolean value) {
     prefs(c).edit().putBoolean("enabled", value).apply();
     schedule(c);
-    if (!value) c.getSystemService(NotificationManager.class).cancel(NOTICE);
+    if (!value) { c.getSystemService(NotificationManager.class).cancel(NOTICE); UpgradeManager.configure(c,false,false); }
   }
   public static void setPreviews(Context c, boolean value) {
     prefs(c).edit().putBoolean("previews", value).remove("tag").remove("url").remove("checked").remove("attempt").remove("error").apply();
@@ -60,7 +65,7 @@ public final class UpdateChecker {
     String tag = p.getString("tag", ""), url = p.getString("url", "");
     ReleaseVersion v = ReleaseVersion.parse(tag), current = ReleaseVersion.parse(BuildConfig.VERSION_NAME);
     if (v != null && current != null && v.compareTo(current) > 0 && validReleaseUrl(url)
-        && (previews(c) || !v.isPreview())) return new Result(tag, url, "已有新版本 " + tag);
+        && (previews(c) || !v.isPreview())) return new Result(tag, url, "已有新版本 " + tag, p.getString("apk",""), p.getString("sha",""), p.getLong("size",0));
     return new Result("", "", "目前版本 " + BuildConfig.VERSION_NAME);
   }
   static boolean validReleaseUrl(String url) {
@@ -82,15 +87,21 @@ public final class UpdateChecker {
       if (r.optBoolean("draft", true) || v == null || v.compareTo(best) <= 0 || !validReleaseUrl(url)
           || (!includePreviews && (r.optBoolean("prerelease", true) || v.isPreview()))) continue;
       JSONArray assets = r.optJSONArray("assets");
-      boolean apk = false;
+      boolean apk = false; String apkUrl="", sha=""; long size=0;
       if (assets != null) for (int j = 0; j < assets.length(); j++) {
         JSONObject a = assets.getJSONObject(j);
         String download = a.optString("browser_download_url");
         if (a.optString("name").endsWith(".apk") && a.optLong("size") > 0
             && "uploaded".equals(a.optString("state"))
-            && download.startsWith("https://github.com/ziyuanh100/HuangNotify/releases/download/")) apk = true;
+            && UpgradeManager.allowedDownload(download)) {
+          apk = true;
+          String digest = a.optString("digest");
+          if (apkUrl.isEmpty() || digest.matches("sha256:[a-f0-9]{64}")) {
+            apkUrl=download; size=a.optLong("size"); sha=digest.startsWith("sha256:")?digest.substring(7):"";
+          }
+        }
       }
-      if (apk) { best = v; result = new Result(tag, url, "發現新版本 " + tag); }
+      if (apk) { best = v; result = new Result(tag, url, "發現新版本 " + tag, apkUrl, sha, size); }
     }
     return result;
   }
@@ -117,10 +128,10 @@ public final class UpdateChecker {
           result = fetch(includePreviews);
           // A user may disable checks or change channel while the request is running.
           if (includePreviews == previews(c) && (manual || enabled(c)))
-            p.edit().putString("tag", result.tag).putString("url", result.url).putLong("checked", now).remove("error").apply();
+            p.edit().putString("tag", result.tag).putString("url", result.url).putString("apk",result.apk).putString("sha",result.sha256).putLong("size",result.size).putLong("checked", now).remove("error").apply();
           else result = cached(c);
         }
-        if (!manual && enabled(c)) notifyUpdate(c, result);
+        if (!manual && enabled(c)) { notifyUpdate(c, result); if (result.installable() && UpgradeManager.automatic(c)) UpgradeManager.request(c,result,true); }
       } catch (Exception e) {
         result = new Result("", "", "暫時無法檢查更新，請稍後確認網路再試；通知紀錄不受影響");
         prefs(c).edit().putString("error", result.message).apply();
@@ -156,12 +167,12 @@ public final class UpdateChecker {
         && c.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) return;
     if (!manager.areNotificationsEnabled() || manager.getNotificationChannel(CHANNEL).getImportance() == NotificationManager.IMPORTANCE_NONE
         || result.tag.equals(prefs(c).getString("notified", ""))) return;
-    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(result.url));
+    Intent intent = new Intent(c,MainActivity.class).putExtra("open_updates",true);
     PendingIntent pending = PendingIntent.getActivity(c, NOTICE, intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     try {
       manager.notify(NOTICE, new Notification.Builder(c, CHANNEL).setSmallIcon(R.drawable.ic_launcher)
           .setContentTitle("HuangNotify 有新版本")
-          .setContentText(result.tag + " · 點選查看更新並下載")
+          .setContentText(result.tag + " · 點選開啟 App 更新")
           .setContentIntent(pending).setAutoCancel(true).build());
       prefs(c).edit().putString("notified", result.tag).apply();
     } catch (SecurityException ignored) { /* Permission may change between the check and notify. */ }
