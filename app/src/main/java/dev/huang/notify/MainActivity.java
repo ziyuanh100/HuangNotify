@@ -876,7 +876,7 @@ public final class MainActivity extends Activity {
   }
 
   private void autoBackupDialog() {
-    LinearLayout body=sheet(); body.addView(u.text(AutoBackup.status(this),14,u.muted,false));
+    LinearLayout body=u.column(); body.addView(u.text(AutoBackup.status(this),14,u.muted,false));
     u.gap(body,12); body.addView(u.text("備份使用可攜式密碼加密，換手機仍可還原。請自行記住密碼。密碼會以本機安全金鑰保護，供每日備份使用。\n\n指定資料夾若由雲端服務提供，檔案會存到該服務。低電量、省電、強制停止或資料夾失聯可能延後備份。",14,u.muted,false));
     if (AutoBackup.enabled(this)) { TextView disable=u.button("停用自動備份",false); body.addView(disable);
       disable.setOnClickListener(v->{ AutoBackup.disable(this); AppDialog.dismissAll(this); build(); toast("已停用，既有備份保留"); }); }
@@ -889,8 +889,8 @@ public final class MainActivity extends Activity {
     dialog.show();
   }
   private void autoBackupPassword(Uri tree) {
-    LinearLayout body=sheet();
-    body.addView(u.text("每天加密備份。新檔成功寫入並驗證後，才清理超過保留份數的本 App 自動備份。手動備份與其他檔案不會清除。\n請記住密碼，遺失後無法還原。",14,u.muted,false));
+    LinearLayout body=u.column();
+    body.addView(u.text("每天加密備份。新檔成功寫入並驗證後，才清理超過保留份數的本 App 自動備份。手動備份與其他檔案不會清除。\n請記住密碼，遺失後無法還原。變更密碼只影響新備份，舊檔仍需原密碼。",14,u.muted,false));
     EditText password=edit("備份密碼（至少 8 個字元）"), confirm=edit("再次輸入密碼");
     password.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD); confirm.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
     body.addView(password); body.addView(confirm); int[] keep={AutoBackup.keep(this)};
@@ -915,11 +915,13 @@ public final class MainActivity extends Activity {
     AutoBackup.run(this,true,new java.util.concurrent.atomic.AtomicBoolean(),message->runOnUiThread(()->{ if (!isDestroyed()) { toast(message); if (page.equals("settings")) build(); } }));
   }
   private void upgradeOptions() {
-    LinearLayout body=sheet();
+    LinearLayout body=u.column();
     body.addView(u.text("開啟後會自動檢查 GitHub，並在 Wi-Fi 等非計量網路下載新版。下載完成會驗證簽章、套件名稱、版本與完整性。\n\n自動安裝需 Android 12 以上及安裝權限；系統仍可能要求確認。自動更新期間 App 可能短暫重啟。",14,u.muted,false));
     AppDialog.Toggle download=new AppDialog.Toggle(this), install=new AppDialog.Toggle(this);
     download.setText("自動下載更新（非計量網路）"); download.setChecked(UpgradeManager.automatic(this)); body.addView(download);
     install.setText("系統允許時自動安裝"); install.setChecked(UpgradeManager.autoInstall(this)); body.addView(install);
+    download.setOnClickListener(v->{ download.toggle(); if (!download.isChecked()) install.setChecked(false); });
+    install.setOnClickListener(v->{ install.toggle(); if (install.isChecked()) download.setChecked(true); });
     install.setEnabled(android.os.Build.VERSION.SDK_INT>=31);
     if (android.os.Build.VERSION.SDK_INT<31) body.addView(u.text("此 Android 版本需手動確認安裝。",13,u.muted,false));
     new AppDialog.Builder(this).setTitle("更新下載與安裝").setView(body).setNegativeButton("取消",null).setPositiveButton("儲存設定",(d,w)->{
@@ -1177,7 +1179,7 @@ public final class MainActivity extends Activity {
         .setTitle("你的通知，由你保管")
         .setMessage(
             "• 所有紀錄保存在本機。\n"
-                + "• App 只向 GitHub 檢查公開版本，不上傳通知內容；沒有廣告或分析追蹤。\n"
+                + "• App 向 GitHub 檢查公開版本及下載更新，不上傳通知內容；沒有廣告或分析追蹤。\n"
                 + "• 不會代你清除通知或回覆訊息。\n"
                 + "• 系統自動備份已停用，手動匯出與選用自動備份會寫入你選擇的位置；若選雲端資料夾，檔案會由該服務保存。\n\n"
                 + "第一版保存通知文字，不下載圖片或附件。來源 App 未提供的內容，以及系統遮蔽的敏感內容，無法還原。\n\n"

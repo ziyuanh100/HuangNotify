@@ -30,6 +30,7 @@ final class AutoBackup {
   static void configure(Context c, Uri tree, char[] password, int keep) throws Exception {
     String wrapped = DeviceSecret.wrap(password);
     SharedPreferences p = prefs(c); String owner = p.getString("owner", UUID.randomUUID().toString());
+    if (!tree.toString().equals(p.getString("tree",""))) p.edit().remove("success").apply();
     if (!p.edit().putString("tree", tree.toString()).putString("secret", wrapped).putString("owner", owner)
         .putInt("keep", keep).putBoolean("enabled", true).remove("error").commit()) throw new IOException("無法儲存備份設定");
     schedule(c);
