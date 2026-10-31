@@ -14,6 +14,41 @@ public class UpdateTest extends AndroidTestCase {
         .put("browser_download_url", "https://github.com/ziyuanh100/HuangNotify/releases/download/" + tag + "/HuangNotify.apk"));
     return r.put("assets", assets);
   }
+  public void testChecksDefaultOnAndExplicitOffIsPreserved() {
+    android.content.SharedPreferences p=UpdateChecker.prefs(getContext()); boolean present=p.contains("enabled"), old=UpdateChecker.enabled(getContext());
+    try {
+      p.edit().remove("enabled").commit(); assertTrue(UpdateChecker.enabled(getContext()));
+      UpdateChecker.enable(getContext(),false); assertFalse(UpdateChecker.enabled(getContext()));
+      UpdateChecker.schedule(getContext()); assertFalse(UpdateChecker.enabled(getContext()));
+    } finally { if(present) UpdateChecker.enable(getContext(),old); else p.edit().remove("enabled").commit(); }
+  }
+  public void testEntryBypassesDailyCacheButExplicitOffDoesNotFetch() throws Exception {
+    android.content.Context c=getContext(); UpdateChecker.Source old=UpdateChecker.source;
+    java.util.concurrent.atomic.AtomicInteger calls=new java.util.concurrent.atomic.AtomicInteger();
+    try {
+      UpdateChecker.prefs(c).edit().clear().putBoolean("enabled",true).putLong("checked",System.currentTimeMillis()).commit();
+      UpdateChecker.source=(context,previews)->{ calls.incrementAndGet(); return new UpdateChecker.NetworkResult(new UpdateChecker.Result("","","沒有新版"),"test-etag"); };
+      for(int i=0;i<2;i++) {
+        java.util.concurrent.CountDownLatch latch=new java.util.concurrent.CountDownLatch(1);
+        UpdateChecker.checkOnEntry(c,result->latch.countDown()); assertTrue(latch.await(10,java.util.concurrent.TimeUnit.SECONDS));
+      }
+      assertEquals(2,calls.get()); UpdateChecker.enable(c,false);
+      java.util.concurrent.CountDownLatch latch=new java.util.concurrent.CountDownLatch(1);
+      UpdateChecker.checkOnEntry(c,result->latch.countDown()); assertTrue(latch.await(10,java.util.concurrent.TimeUnit.SECONDS)); assertEquals(2,calls.get());
+    } finally { UpdateChecker.source=old; UpdateChecker.enable(c,false); UpdateChecker.prefs(c).edit().remove("etag").remove("checked").commit(); }
+  }
+  public void testDisablingWhileRequestRunsSuppressesResult() throws Exception {
+    android.content.Context c=getContext(); UpdateChecker.Source old=UpdateChecker.source;
+    java.util.concurrent.CountDownLatch started=new java.util.concurrent.CountDownLatch(1), release=new java.util.concurrent.CountDownLatch(1), done=new java.util.concurrent.CountDownLatch(1);
+    boolean[] available={true};
+    try {
+      UpdateChecker.prefs(c).edit().clear().putBoolean("enabled",true).commit();
+      UpdateChecker.source=(context,previews)->{ started.countDown(); release.await(10,java.util.concurrent.TimeUnit.SECONDS); return new UpdateChecker.NetworkResult(new UpdateChecker.Result("v9.0.0","https://github.com/ziyuanh100/HuangNotify/releases/tag/v9.0.0","有新版"),""); };
+      UpdateChecker.checkOnEntry(c,result->{ available[0]=result.available(); done.countDown(); });
+      assertTrue(started.await(10,java.util.concurrent.TimeUnit.SECONDS)); UpdateChecker.enable(c,false); release.countDown();
+      assertTrue(done.await(10,java.util.concurrent.TimeUnit.SECONDS)); assertFalse(available[0]); assertEquals("",UpdateChecker.prefs(c).getString("tag",""));
+    } finally { release.countDown(); UpdateChecker.source=old; UpdateChecker.enable(c,false); }
+  }
   public void testSelectsHighestVersionNotFirstDate() throws Exception {
     JSONArray feed = new JSONArray().put(release("v0.3.0", false, true)).put(release("v0.10.0", false, true)).put(release("v0.2.1", false, true));
     assertEquals("v0.10.0", UpdateChecker.select(feed, "0.2.0-alpha.1", false).tag);

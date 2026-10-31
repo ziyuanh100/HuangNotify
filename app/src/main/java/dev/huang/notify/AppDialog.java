@@ -28,6 +28,11 @@ public final class AppDialog extends Dialog {
   private final Ui u;
   private final android.util.SparseArray<TextView> buttons = new android.util.SparseArray<>();
   private AppDialog(Builder spec) { super(spec.context); this.spec = spec; u = new Ui(spec.context); }
+  static boolean hasOpen(Context context) {
+    List<AppDialog> dialogs=OPEN.get(context);
+    if (dialogs!=null) for(AppDialog dialog:dialogs) if(dialog.isShowing()) return true;
+    return false;
+  }
   public static void dismissAll(Context context) {
     List<AppDialog> dialogs = OPEN.remove(context);
     if (dialogs != null) for (AppDialog dialog : new ArrayList<>(dialogs)) dialog.dismiss();

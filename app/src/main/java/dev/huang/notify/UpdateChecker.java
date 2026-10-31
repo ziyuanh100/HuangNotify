@@ -42,10 +42,11 @@ public final class UpdateChecker {
   }
   private UpdateChecker() {}
   static SharedPreferences prefs(Context c) { return c.getSharedPreferences("updates", Context.MODE_PRIVATE); }
-  public static boolean enabled(Context c) { return prefs(c).getBoolean("enabled", false); }
+  public static boolean enabled(Context c) { return prefs(c).getBoolean("enabled", true); }
   public static boolean previews(Context c) { return prefs(c).getBoolean("previews", true); }
   public static void enable(Context c, boolean value) {
-    prefs(c).edit().putBoolean("enabled", value).apply();
+    SharedPreferences p=prefs(c);
+    p.edit().putBoolean("enabled", value).putInt("generation",p.getInt("generation",0)+1).apply();
     schedule(c);
     if (!value) { c.getSystemService(NotificationManager.class).cancel(NOTICE); UpgradeManager.configure(c,false,false); }
   }
@@ -56,7 +57,7 @@ public final class UpdateChecker {
       UpgradeManager.prefs(c).edit().putBoolean("ready",false).apply();
       UpgradeManager.status(c,"已切換正式版頻道，請重新檢查更新");
     }
-    prefs(c).edit().putBoolean("previews", value).remove("tag").remove("url").remove("checked").remove("attempt").remove("error").apply();
+    prefs(c).edit().putBoolean("previews", value).putInt("generation",prefs(c).getInt("generation",0)+1).remove("etag").remove("tag").remove("url").remove("checked").remove("attempt").remove("error").apply();
     c.getSystemService(NotificationManager.class).cancel(NOTICE);
   }
   public static void schedule(Context c) {
@@ -111,57 +112,83 @@ public final class UpdateChecker {
     }
     return result;
   }
-  public static void check(Context context, boolean manual, Callback callback) {
-    Context c = context.getApplicationContext();
-    IO.execute(() -> {
+  static final class NetworkResult {
+    final Result result; final String etag;
+    NetworkResult(Result result,String etag) { this.result=result; this.etag=etag; }
+  }
+  interface Source { NetworkResult fetch(Context c,boolean previews) throws Exception; }
+  static volatile Source source=UpdateChecker::fetch;
+  public static void check(Context c,boolean manual,Callback callback) { check(c,manual,false,callback); }
+  public static void checkOnEntry(Context c,Callback callback) { check(c,false,true,callback); }
+  private static void check(Context context,boolean manual,boolean entry,Callback callback) {
+    Context c=context.getApplicationContext();
+    IO.execute(()->{
       Result result;
       try {
-        if (!manual && !enabled(c)) { callback.done(cached(c)); return; }
-        SharedPreferences p = prefs(c);
-        long now = System.currentTimeMillis(), last = p.getLong("checked", 0);
-        long attempt = p.getLong("attempt", 0);
-        long retryInterval = manual ? 60000 : 60L * 60 * 1000;
-        if (now >= attempt && now - attempt < retryInterval && !p.getString("error", "").isEmpty()) {
-          callback.done(new Result("", "", p.getString("error", ""))); return;
+        if (!manual && !enabled(c)) { callback.done(new Result("","","自動檢查已關閉")); return; }
+        SharedPreferences p=prefs(c); long now=System.currentTimeMillis(), last=p.getLong("checked",0), attempt=p.getLong("attempt",0);
+        boolean includePreviews=previews(c); int generation=p.getInt("generation",0);
+        long retry=manual?60000:60L*60*1000;
+        if (now<p.getLong("retry_after",0)) throw new java.io.IOException("版本服務要求稍後重試");
+        if (!entry && now>=attempt && now-attempt<retry && !p.getString("error","").isEmpty()) {
+          callback.done(new Result("","",p.getString("error",""))); return;
         }
-        long interval = manual ? 60000 : DAY;
-        if (now >= last && now - last < interval) {
-          result = cached(c);
-          if (!result.available()) result = new Result("", "", "最近已檢查，未發現新版本");
+        long interval=manual?60000:DAY;
+        if (!entry && now>=last && now-last<interval) {
+          result=cached(c);
+          if (!result.available()) result=new Result("","","最近已檢查，未發現新版本");
         } else {
-          boolean includePreviews = previews(c);
-          p.edit().putLong("attempt", now).apply();
-          result = fetch(includePreviews);
-          // A user may disable checks or change channel while the request is running.
-          if (includePreviews == previews(c) && (manual || enabled(c)))
-            p.edit().putString("tag", result.tag).putString("url", result.url).putString("apk",result.apk).putString("sha",result.sha256).putLong("size",result.size).putLong("checked", now).remove("error").apply();
-          else result = cached(c);
+          p.edit().putLong("attempt",now).apply();
+          NetworkResult network=source.fetch(c,includePreviews); result=network.result;
+          if (includePreviews==previews(c) && generation==p.getInt("generation",0) && (manual||enabled(c))) {
+            p.edit().putString("tag",result.tag).putString("url",result.url).putString("apk",result.apk)
+              .putString("sha",result.sha256).putLong("size",result.size).putString("etag",network.etag)
+              .putLong("checked",now).remove("error").remove("retry_after").apply();
+          } else result=new Result("","","更新偏好已變更");
         }
-        if (!manual && enabled(c)) { notifyUpdate(c, result); if (result.installable() && UpgradeManager.automatic(c)) UpgradeManager.request(c,result,true); }
-      } catch (Exception e) {
-        result = new Result("", "", "暫時無法檢查更新，請稍後確認網路再試；通知紀錄不受影響");
-        prefs(c).edit().putString("error", result.message).apply();
+        if (!manual && enabled(c)) {
+          if (!entry) notifyUpdate(c,result);
+          if (result.installable() && UpgradeManager.automatic(c)) UpgradeManager.request(c,result,true);
+        }
+      } catch(Exception e) {
+        String message="暫時無法檢查更新，請稍後確認網路再試；通知紀錄不受影響";
+        prefs(c).edit().putString("error",message).apply();
+        Result known=cached(c);
+        result=entry && enabled(c) && known.available()
+          ?new Result(known.tag,known.url,"上次發現 "+known.tag+"；目前無法確認最新狀態",known.apk,known.sha256,known.size)
+          :new Result("","",message);
       }
       callback.done(result);
     });
   }
-  private static Result fetch(boolean previews) throws Exception {
-    HttpURLConnection connection = (HttpURLConnection) new URL(API).openConnection();
-    connection.setConnectTimeout(10000); connection.setReadTimeout(10000);
-    connection.setInstanceFollowRedirects(false);
-    connection.setRequestProperty("Accept", "application/vnd.github+json");
-    connection.setRequestProperty("User-Agent", "HuangNotify-UpdateChecker");
+  private static NetworkResult fetch(Context c,boolean previews) throws Exception {
+    HttpURLConnection connection=(HttpURLConnection)new URL(API).openConnection();
+    connection.setConnectTimeout(10000); connection.setReadTimeout(10000); connection.setInstanceFollowRedirects(false);
+    connection.setRequestProperty("Accept","application/vnd.github+json");
+    connection.setRequestProperty("User-Agent","HuangNotify-UpdateChecker");
+    String etag=prefs(c).getString("etag","");
+    if (!etag.isEmpty()) connection.setRequestProperty("If-None-Match",etag);
     try {
-      if (connection.getResponseCode() != 200) throw new java.io.IOException("Release service unavailable");
-      try (InputStream input = connection.getInputStream(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-        byte[] buffer = new byte[8192]; int n;
-        long deadline = android.os.SystemClock.elapsedRealtime() + 20000;
-        while ((n = input.read(buffer)) != -1) {
-          if (Thread.currentThread().isInterrupted() || android.os.SystemClock.elapsedRealtime() > deadline
-              || output.size() + n > 2 * 1024 * 1024) throw new java.io.IOException("Response limit");
-          output.write(buffer, 0, n);
+      int response=connection.getResponseCode();
+      if (response==304) return new NetworkResult(cached(c),etag);
+      if (response==403 || response==429) {
+        long until=System.currentTimeMillis()+60000;
+        try {
+          String retry=connection.getHeaderField("Retry-After"), reset=connection.getHeaderField("X-RateLimit-Reset");
+          if (retry!=null) until=Math.max(until,System.currentTimeMillis()+Long.parseLong(retry)*1000);
+          if ("0".equals(connection.getHeaderField("X-RateLimit-Remaining")) && reset!=null) until=Math.max(until,Long.parseLong(reset)*1000);
+        } catch(NumberFormatException ignored) { }
+        prefs(c).edit().putLong("retry_after",Math.min(until,System.currentTimeMillis()+DAY)).apply();
+      }
+      if (response!=200) throw new java.io.IOException("Release service unavailable");
+      try(InputStream input=connection.getInputStream(); ByteArrayOutputStream output=new ByteArrayOutputStream()) {
+        byte[] buffer=new byte[8192]; int n; long deadline=android.os.SystemClock.elapsedRealtime()+20000;
+        while((n=input.read(buffer))!=-1) {
+          if (Thread.currentThread().isInterrupted() || android.os.SystemClock.elapsedRealtime()>deadline || output.size()+n>2*1024*1024) throw new java.io.IOException("Response limit");
+          output.write(buffer,0,n);
         }
-        return select(new JSONArray(output.toString(StandardCharsets.UTF_8.name())), BuildConfig.VERSION_NAME, previews);
+        String nextEtag=connection.getHeaderField("ETag");
+        return new NetworkResult(select(new JSONArray(output.toString(StandardCharsets.UTF_8.name())),BuildConfig.VERSION_NAME,previews),nextEtag==null?"":nextEtag);
       }
     } finally { connection.disconnect(); }
   }

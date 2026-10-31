@@ -23,6 +23,7 @@ final class UpgradeManager {
   static boolean autoInstall(Context c) { return prefs(c).getBoolean("install", false); }
   static File apk(Context c) { return new File(c.getFilesDir(), "update.apk"); }
   static String status(Context c) { return prefs(c).getString("status", "尚未下載更新"); }
+  static void stage(Context c,String stage,String text) { prefs(c).edit().putString("stage",stage).putString("status",text).apply(); }
   static void status(Context c, String text) { prefs(c).edit().putString("status", text).apply(); }
   static void configure(Context c, boolean download, boolean install) {
     prefs(c).edit().putBoolean("download", download).putBoolean("install", download && install).apply();
@@ -35,13 +36,17 @@ final class UpgradeManager {
     if (!result.installable()) { status(c, "此版本缺少完整驗證資訊，請到官方版本頁下載"); return; }
     if (automatic && !automatic(c)) return;
     if (prefs(c).getBoolean("ready", false) && result.tag.equals(prefs(c).getString("tag", "")) && apk(c).isFile()) return;
-    if (c.getSystemService(JobScheduler.class).getPendingJob(JOB) != null) return;
+    JobInfo existing=c.getSystemService(JobScheduler.class).getPendingJob(JOB);
+    if (existing!=null) {
+      if (!automatic && existing.getExtras().getBoolean("automatic")) c.getSystemService(JobScheduler.class).cancel(JOB);
+      else return;
+    }
     PersistableBundle data = new PersistableBundle();
     data.putString("tag", result.tag); data.putString("url", result.apk); data.putString("sha", result.sha256); data.putLong("size", result.size); data.putBoolean("automatic", automatic);
     int scheduled = c.getSystemService(JobScheduler.class).schedule(new JobInfo.Builder(JOB, new ComponentName(c, UpgradeJob.class))
         .setRequiredNetworkType(automatic ? JobInfo.NETWORK_TYPE_UNMETERED : JobInfo.NETWORK_TYPE_ANY)
         .setExtras(data).setPersisted(true).build());
-    status(c, scheduled == JobScheduler.RESULT_SUCCESS ? automatic ? "等待 Wi-Fi 等非計量網路下載更新" : "準備下載更新…" : "無法排程下載，請重試");
+    stage(c,scheduled==JobScheduler.RESULT_SUCCESS?"queued":"failed", scheduled == JobScheduler.RESULT_SUCCESS ? automatic ? "等待 Wi-Fi 等非計量網路下載更新" : "準備下載更新…" : "無法排程下載，請重試");
   }
   static boolean allowedVersion(Context c,String tag) {
     ReleaseVersion version=ReleaseVersion.parse(tag), current=ReleaseVersion.parse(BuildConfig.VERSION_NAME);
@@ -81,7 +86,7 @@ final class UpgradeManager {
           if (cancelled.get() || (data.getBoolean("automatic") && !automatic(c)) || SystemClock.elapsedRealtime() > deadline) throw new InterruptedIOException();
           received += n; if (received > size) throw new IOException(); out.write(buffer, 0, n);
           int percent = (int)(received * 100 / size);
-          if (percent / 5 != lastPercent / 5 || lastPercent < 0) { lastPercent = percent; status(c, "正在下載更新 " + percent + "%"); notice(c, "正在下載更新", percent + "%", null); }
+          if (percent / 5 != lastPercent / 5 || lastPercent < 0) { lastPercent = percent; prefs(c).edit().putString("stage","downloading").putInt("progress",percent).putString("status","正在下載更新 "+percent+"%").apply(); notice(c, "正在下載更新", percent + "%", null); }
         }
       }
       if (received != size || cancelled.get() || !allowedVersion(c,tag)) throw new IOException();
@@ -89,7 +94,7 @@ final class UpgradeManager {
       if (apk(c).exists() && !apk(c).delete()) throw new IOException();
       if (!temp.renameTo(apk(c))) throw new IOException();
       prefs(c).edit().putBoolean("ready", true).putString("tag", tag).putString("sha", expected).apply();
-      status(c, tag + " 已下載並通過驗證，點選安裝更新"); notice(c, "更新已準備好", "點選開啟 HuangNotify 完成更新", null);
+      stage(c,"ready", tag + " 已下載並通過驗證，點選安裝更新"); notice(c, "更新已準備好", "點選開啟 HuangNotify 完成更新", null);
       if (data.getBoolean("automatic") && automatic(c) && autoInstall(c) && Build.VERSION.SDK_INT >= 31 && c.getPackageManager().canRequestPackageInstalls()) install(c, true);
     } finally { if (connection != null) connection.disconnect(); temp.delete(); }
   }
@@ -118,13 +123,14 @@ final class UpgradeManager {
   static void install(Context context, boolean silent) {
     Context c = context.getApplicationContext();
     if (!INSTALLING.compareAndSet(false, true)) return;
+    stage(c,"installing","正在驗證與準備安裝更新…");
     IO.execute(() -> {
       PackageInstaller installer = c.getPackageManager().getPackageInstaller(); int sessionId = -1;
       try {
         if (!allowedVersion(c,prefs(c).getString("tag",""))) throw new SecurityException("更新頻道已變更或版本過舊");
         if (!prefs(c).getBoolean("ready",false)) throw new IOException("請先下載更新");
-        if (!c.getPackageManager().canRequestPackageInstalls()) { status(c,"請先允許 HuangNotify 安裝更新"); return; }
-        if (silent && (!automatic(c) || !autoInstall(c))) return;
+        if (!c.getPackageManager().canRequestPackageInstalls()) { stage(c,"ready","請先允許 HuangNotify 安裝更新"); return; }
+        if (silent && (!automatic(c) || !autoInstall(c))) { stage(c,"ready","更新已準備好，可手動安裝"); return; }
         verify(c, apk(c), prefs(c).getString("sha",""), prefs(c).getString("tag",""));
         int previous = prefs(c).getInt("session", -1);
         if (previous != -1) try { installer.abandonSession(previous); } catch (Exception ignored) { }
@@ -148,15 +154,14 @@ final class UpgradeManager {
       } catch (Exception e) {
         if (sessionId != -1) try { installer.abandonSession(sessionId); } catch (Exception ignored) { }
         prefs(c).edit().putBoolean("ready",false).apply();
-        status(c,"安裝未完成：請確認更新檔、簽章、安裝權限或重新下載");
+        stage(c,"failed","安裝未完成：請確認更新檔、簽章、安裝權限或重新下載");
       } finally { INSTALLING.set(false); }
     });
   }
   static void reconcile(Context c) {
-    ReleaseVersion pending = ReleaseVersion.parse(prefs(c).getString("tag","")), current = ReleaseVersion.parse(BuildConfig.VERSION_NAME);
-    if (pending != null && current != null && pending.compareTo(current) <= 0) {
-      apk(c).delete(); prefs(c).edit().putBoolean("ready",false).remove("session").putString("status","更新完成，目前版本 "+BuildConfig.VERSION_NAME).apply(); confirmation=null;
-      c.getSystemService(NotificationManager.class).cancel(NOTICE);
+    ReleaseVersion pending=ReleaseVersion.parse(prefs(c).getString("tag","")),current=ReleaseVersion.parse(BuildConfig.VERSION_NAME);
+    if (pending!=null && current!=null && pending.compareTo(current)<=0) {
+      apk(c).delete(); UpdateCompletion.mark(c);
     }
   }
   static void notice(Context c, String title, String message, Intent confirm) {

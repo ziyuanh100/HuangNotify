@@ -76,3 +76,11 @@ adb shell am start -n dev.huang.notify.probe/.ProbeActivity --ei id 42 --ez canc
 - 更新：拒絕簽章／套件／宣告版本不符、降版、SHA 損壞、非官方／非 HTTPS 網址；缺少 digest 不進行 App 內下載。
 - Debug-only 私有 DocumentsProvider 僅作測試，release APK 不包含。
 - 正式版前仍須：簽章相同的真實 APK 覆蓋安裝、Android 12／16 系統確認與免確認分支、安裝取消／失敗、程序重啟、撤銷資料夾權限、磁碟滿、Samsung A55 長時間鎖屏與省電驗證。
+
+## 1.0.0-alpha.2 更新流程
+
+- 預設開啟檢查；舊版明確關閉值保留；每次前景進入略過 24 小時快取。
+- 檢查中關閉設定，舊回應不再提示；同一前景時段不因對話框關閉重複檢查。
+- 自訂「現在更新／稍後再說」、App 內下載進度、權限入口與 Android 安裝確認銜接。
+- 更新完成標記跨重啟保留，通知提供重新開啟入口；完成提示可確認並避免重複顯示。
+- 仍需實機驗證：Play Protect／安裝來源限制、真實 APK 自我覆蓋後重新開啟、各廠牌安裝確認與背景排程。

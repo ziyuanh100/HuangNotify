@@ -12,6 +12,7 @@ public class DialogTest extends ActivityInstrumentationTestCase2<MainActivity> {
   public DialogTest() { super(MainActivity.class); }
   @Override protected void setUp() throws Exception {
     super.setUp();
+    UpdateChecker.enable(getInstrumentation().getTargetContext(),false);
     getInstrumentation().getTargetContext().getSharedPreferences("permission_guide", 0).edit().putInt("step", 3).commit();
     activity = getActivity(); getInstrumentation().waitForIdleSync();
   }

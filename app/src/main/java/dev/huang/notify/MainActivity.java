@@ -40,6 +40,7 @@ public final class MainActivity extends Activity {
   private TextView backupStatus, upgradeStatus;
   private boolean recordingLoaded, recordingSaving;
   PermissionGuide permissionGuide;
+  UpdateFlow updateFlow;
   private LinearLayout root, content, nav, statusBox;
   private TextView statusTitle,
       statusBody,
@@ -91,6 +92,7 @@ public final class MainActivity extends Activity {
     super.onCreate(state);
     u = new Ui(this);
     permissionGuide = new PermissionGuide(this);
+    updateFlow=new UpdateFlow(this);
     if (state != null) {
       page = state.getString("page", "records");
       query = state.getString("query", "");
@@ -155,18 +157,22 @@ public final class MainActivity extends Activity {
     AutoBackup.schedule(this);
     UpgradeManager.reconcile(this);
     UpdateChecker.schedule(this);
-    if (UpdateChecker.enabled(this)) UpdateChecker.check(this, false, result -> {});
+    updateFlow.resume();
   }
 
   @Override
   protected void onPause() {
     resumed = false;
+    updateFlow.pause();
     handler.removeCallbacks(poll);
     super.onPause();
   }
 
+  @Override protected void onStop() { updateFlow.leave(); super.onStop(); }
+
   @Override
   protected void onDestroy() {
+    updateFlow.destroy();
     handler.removeCallbacksAndMessages(null);
     AppDialog.dismissAll(this);
     if (pendingExport != null) Arrays.fill(pendingExport, (byte) 0);
@@ -851,12 +857,18 @@ public final class MainActivity extends Activity {
                 .show());
     section(inner, "App 更新");
     settingRow(inner, "檢查新版本", UpdateChecker.cached(this).message, "backup", this::checkForUpdates);
-    settingRow(inner, UpdateChecker.enabled(this) ? "自動更新提醒：已開啟" : "開啟自動更新提醒",
-        "每天檢查 GitHub；下載與安裝偏好可另行設定", "bell", this::updateReminderDialog);
+    LinearLayout updateRow=u.row(); updateRow.setPadding(u.d(16),u.d(12),u.d(8),u.d(12));
+    updateRow.setBackground(u.shape(u.surface,18));
+    LinearLayout updateText=u.column(); updateText.addView(u.text("自動檢查更新",16,u.ink,true));
+    updateText.addView(u.text("預設開啟 · 每次進入 App 檢查 GitHub\n只傳送一般連線資訊，不會上傳通知內容。可隨時關閉。",12,u.muted,false));
+    RecordSwitch updateSwitch=new RecordSwitch(this); updateSwitch.setContentDescription("自動檢查更新"); updateSwitch.setTag("update_check");
+    updateSwitch.setChecked(UpdateChecker.enabled(this));
+    updateSwitch.setOnCheckedChangeListener((button,checked)->{ UpdateChecker.enable(this,checked); updateFlow.automaticChanged(); });
+    updateRow.addView(updateText,new LinearLayout.LayoutParams(0,-2,1)); updateRow.addView(updateSwitch); inner.addView(updateRow); u.gap(inner,8);
     settingRow(inner, "包含測試版", UpdateChecker.previews(this) ? "已開啟 · 可收到 Alpha / Beta 版本" : "只接收正式版本",
         "settings", () -> {
           UpdateChecker.setPreviews(this, !UpdateChecker.previews(this));
-          build();
+          updateFlow.automaticChanged(); build();
         });
     settingRow(inner, "更新下載與安裝", "自動下載、非計量網路與安裝偏好", "backup", this::upgradeOptions);
     settingRow(inner, "安裝已下載更新", "驗證通過後交由 Android 處理", "check", this::installDownloaded);
@@ -936,39 +948,7 @@ public final class MainActivity extends Activity {
     try { startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:"+getPackageName()))); }
     catch(Exception e) { toast("請在系統設定允許 HuangNotify 安裝更新"); }
   }
-  private void installDownloaded() {
-    if (!UpgradeManager.prefs(this).getBoolean("ready",false)) { toast("尚無已驗證的更新，請先檢查新版本"); return; }
-    if (!getPackageManager().canRequestPackageInstalls()) {
-      new AppDialog.Builder(this).setTitle("允許安裝 App 更新").setMessage("接著開啟 Android 設定，請允許 HuangNotify 安裝更新，返回後再點選安裝。只安裝與目前 App 同簽章的官方新版。")
-        .setNegativeButton("稍後",null).setPositiveButton("前往設定",(d,w)->openInstallPermission()).show(); return;
-    }
-    Intent confirmation=UpgradeManager.confirmation;
-    if (confirmation!=null) {
-      try { startActivity(confirmation); return; } catch(Exception e) { UpgradeManager.confirmation=null; }
-    }
-    UpgradeManager.install(this,false); toast("正在驗證並準備安裝…");
-  }
-
-  private void updateReminderDialog() {
-    if (UpdateChecker.enabled(this)) {
-      new AppDialog.Builder(this).setTitle("關閉自動更新提醒？")
-          .setMessage("仍可在設定手動檢查新版本。")
-          .setNegativeButton("保留", null).setPositiveButton("關閉", (d, w) -> {
-            UpdateChecker.enable(this, false); build();
-          }).show();
-      return;
-    }
-    new AppDialog.Builder(this).setTitle("有新版時提醒我")
-        .setMessage("約每天向 GitHub 檢查一次公開版本，GitHub 會收到一般連線資訊（例如 IP），不會收到通知內容。省電模式或網路狀態可能延後檢查。下載與安裝可在「更新下載與安裝」另行設定。")
-        .setNegativeButton("稍後", null).setPositiveButton("開啟提醒", (d, w) -> {
-          UpdateChecker.enable(this, true);
-          if (android.os.Build.VERSION.SDK_INT >= 33
-              && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
-            requestPermissions(new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 8413);
-          UpdateChecker.check(this, false, result -> {});
-          build();
-        }).show();
-  }
+  private void installDownloaded() { updateFlow.openDownloaded(); }
 
   @Override
   public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
@@ -980,20 +960,7 @@ public final class MainActivity extends Activity {
   }
 
   private void checkForUpdates() {
-    toast("正在檢查 GitHub 版本…");
-    UpdateChecker.check(this, true, result -> runOnUiThread(() -> {
-      if (isFinishing() || isDestroyed()) return;
-      if (page.equals("settings")) build();
-      AppDialog.Builder dialog = new AppDialog.Builder(this)
-          .setTitle(result.available() ? "有新版本可以下載" : "版本檢查")
-          .setMessage(result.message + (result.available() ? "\n\n可直接下載至 App，通過完整性與簽章驗證後再安裝。更新前建議先完成備份。" : ""))
-          .setNegativeButton("關閉", null);
-      if (result.available()) {
-        if (result.installable()) dialog.setPositiveButton("下載更新", (d,w) -> { UpgradeManager.request(this,result,false); build(); });
-        dialog.setNeutralButton("查看版本說明",(d,w)->{ try { startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(result.url))); } catch(Exception e) { toast("無法開啟版本頁"); } });
-      }
-      dialog.show();
-    }));
+    toast("正在檢查 GitHub 版本…"); updateFlow.check(true);
   }
 
   private void section(LinearLayout parent, String title) {

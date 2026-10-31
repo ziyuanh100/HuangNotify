@@ -43,16 +43,17 @@ final class PermissionGuide {
             step(returned ? 2 : 3); if (returned) resume();
           }).create();
     } else {
-      if (UpdateChecker.enabled(activity)) { step(3); return; }
-      dialog = new AppDialog.Builder(activity).setTitle("有更新時，通知你")
-          .setMessage("步驟 2 / 2 · 選用功能\n\n開啟後約每天向 GitHub 檢查新版本，GitHub 會收到 IP 等一般連線資訊，不會收到你的通知內容。\n\n下一步會請求傳送更新通知的權限。不同意仍可保存通知及手動檢查版本。備份則在使用時選擇檔案，不需開放全部檔案權限。")
-          .setPositiveButton("開啟更新提醒", (d, w) -> {
-            step(3); UpdateChecker.enable(activity, true);
+      if (activity.getSystemService(NotificationManager.class).areNotificationsEnabled()
+          && (Build.VERSION.SDK_INT<33 || activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)==android.content.pm.PackageManager.PERMISSION_GRANTED)) { step(3); return; }
+      dialog = new AppDialog.Builder(activity).setTitle("允許更新完成通知")
+          .setMessage("步驟 2 / 2 · 選用功能\n\n預設每次進入 App 都向 GitHub 檢查新版本，可在設定關閉，GitHub 會收到 IP 等一般連線資訊，不會收到你的通知內容。\n\n下一步會請求傳送更新通知的權限。不同意仍可保存通知，並在 App 內收到更新提示。備份則在使用時選擇檔案，不需開放全部檔案權限。")
+          .setPositiveButton("允許更新通知", (d, w) -> {
+            step(3);
             if (Build.VERSION.SDK_INT >= 33 && activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
               activity.requestPermissions(new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 8413);
             else if (!activity.getSystemService(NotificationManager.class).areNotificationsEnabled())
               activity.startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, activity.getPackageName()));
-            UpdateChecker.check(activity, false, result -> {});
+
           }).setNegativeButton("暫時不用", (d, w) -> step(3)).create();
     }
     dialog.setOnCancelListener(d -> step(3));
