@@ -84,3 +84,5 @@ adb shell am start -n dev.huang.notify.probe/.ProbeActivity --ei id 42 --ez canc
 - 自訂「現在更新／稍後再說」、App 內下載進度、權限入口與 Android 安裝確認銜接。
 - 更新完成標記跨重啟保留，通知提供重新開啟入口；完成提示可確認並避免重複顯示。
 - 仍需實機驗證：Play Protect／安裝來源限制、真實 APK 自我覆蓋後重新開啟、各廠牌安裝確認與背景排程。
+
+CI 另外以獨立 instrumentation 將 v1.0.0-alpha.1 的真實 APK 升級至 alpha.2，驗證程序替換、通知文字、兩個內容版本、收藏、備註、暫停與保存期限，以及更新完成提示與重新開啟按鈕。測試採同一模擬器的 debug 簽章，正式 APK 仍使用獨立固定 release 簽章。

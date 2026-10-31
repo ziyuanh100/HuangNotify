@@ -52,6 +52,16 @@ jobs:
         with:
           packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
+      - name: Prepare self-update fixture APKs
+        run: |
+          ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+          cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/next.apk"
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk "$RUNNER_TEMP/upgrade-tests.apk"
+          git fetch --depth=1 origin tag v1.0.0-alpha.1
+          mkdir -p "$RUNNER_TEMP/huangnotify-previous"
+          git archive v1.0.0-alpha.1 | tar -x -C "$RUNNER_TEMP/huangnotify-previous"
+          "$RUNNER_TEMP/huangnotify-previous/gradlew" -p "$RUNNER_TEMP/huangnotify-previous" :app:assembleDebug
+          cp "$RUNNER_TEMP/huangnotify-previous/app/build/outputs/apk/debug/app-debug.apk" "$RUNNER_TEMP/previous.apk"
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -66,6 +76,15 @@ jobs:
           script: |
             ./gradlew :app:connectedDebugAndroidTest
             adb pull /data/local/tmp/huangnotify-ui-preview ui-preview
+            adb uninstall dev.huang.notify || true
+            adb uninstall dev.huang.notify.test || true
+            adb install "$RUNNER_TEMP/previous.apk"
+            adb install "$RUNNER_TEMP/upgrade-tests.apk"
+            adb push "$RUNNER_TEMP/next.apk" /data/local/tmp/huangnotify-next.apk
+            adb shell appops set dev.huang.notify REQUEST_INSTALL_PACKAGES allow
+            adb shell am instrument -w -e phase before dev.huang.notify.test/dev.huang.notify.UpgradeHarness > upgrade-before.txt || true
+            adb shell am instrument -w -e phase after dev.huang.notify.test/dev.huang.notify.UpgradeHarness > upgrade-after.txt
+            grep -q 'INSTRUMENTATION_CODE: -1' upgrade-after.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -76,3 +95,9 @@ jobs:
         with:
           name: device-test-reports
           path: app/build/reports/androidTests/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: self-update-cycle
+          path: upgrade-*.txt
