@@ -8,11 +8,12 @@ import java.security.MessageDigest;
 import java.util.Locale;
 
 /** Separate CI instrumentation: real old-APK self update, process replacement, and reopen. */
-public final class UpgradeHarness extends Instrumentation {
+public final class UpgradeHarness extends android.test.InstrumentationTestRunner {
   private String phase;
-  @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); phase=arguments.getString("phase",""); start(); }
+  @Override public void onCreate(Bundle arguments) { phase=arguments.getString("phase",""); if (phase.isEmpty()) super.onCreate(arguments); else start(); }
   private void require(boolean value,String error) { if(!value) throw new AssertionError(error); }
   @Override public void onStart() {
+    if (phase.isEmpty()) { super.onStart(); return; }
     try {
       android.content.Context c=getTargetContext();
       if(phase.equals("before")) {
