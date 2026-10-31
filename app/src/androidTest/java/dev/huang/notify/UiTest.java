@@ -46,8 +46,21 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
       View settings=find(activity.getWindow().getDecorView(),"設定");
       getInstrumentation().runOnMainSync(()->((View)settings.getParent()).performClick()); getInstrumentation().waitForIdleSync();
       assertEquals(!previous,recordSwitch(activity.getWindow().getDecorView()).isChecked());
-      try(android.os.ParcelFileDescriptor fd=getInstrumentation().getUiAutomation().executeShellCommand("screencap -p /data/local/tmp/huangnotify-ui-preview/record-switch.png"); java.io.FileInputStream in=new java.io.FileInputStream(fd.getFileDescriptor())) { byte[] bytes=new byte[1024]; while(in.read(bytes)!=-1) {} }
+      capture("record-switch.png");
+      View backup=find(activity.getWindow().getDecorView(),"自動加密備份");
+      getInstrumentation().runOnMainSync(()->((View)backup.getParent().getParent()).performClick());
+      getInstrumentation().waitForIdleSync(); capture("auto-backup.png");
+      getInstrumentation().runOnMainSync(()->AppDialog.dismissAll(activity));
+      View update=find(activity.getWindow().getDecorView(),"更新下載與安裝");
+      getInstrumentation().runOnMainSync(()->((View)update.getParent().getParent()).performClick());
+      getInstrumentation().waitForIdleSync(); capture("update-options.png");
+      getInstrumentation().runOnMainSync(()->AppDialog.dismissAll(activity));
     } finally { Store.IO.submit(()->Store.get(activity).putSetting("paused",previous?"0":"1")).get(); }
+  }
+  private void capture(String name) throws Exception {
+    for(String command:new String[]{"mkdir -p /data/local/tmp/huangnotify-ui-preview", "screencap -p /data/local/tmp/huangnotify-ui-preview/"+name}) {
+      try(android.os.ParcelFileDescriptor fd=getInstrumentation().getUiAutomation().executeShellCommand(command); java.io.FileInputStream in=new java.io.FileInputStream(fd.getFileDescriptor())) { byte[] bytes=new byte[1024]; while(in.read(bytes)!=-1) {} }
+    }
   }
   private RecordSwitch recordSwitch(View v) {
     if(v instanceof RecordSwitch) return (RecordSwitch)v;

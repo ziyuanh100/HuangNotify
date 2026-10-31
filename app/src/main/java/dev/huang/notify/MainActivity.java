@@ -1318,7 +1318,8 @@ public final class MainActivity extends Activity {
     if (request == 103) {
       try {
         int flags=data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        getContentResolver().takePersistableUriPermission(uri,flags);
+        if (flags != (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) throw new SecurityException("需要資料夾讀寫權限");
+        getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
         autoBackupPassword(uri);
       } catch(Exception e) { toast("無法保留資料夾權限，請重新選擇"); }
       return;
