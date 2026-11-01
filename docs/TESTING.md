@@ -48,7 +48,7 @@ adb shell am start -n dev.huang.notify.probe/.ProbeActivity --ei id 42 --ez canc
 
 確認同一通知只計一則、兩個文字版本均保留、移除後仍可查看。`UiTest` 另外檢查三個主要頁面的導覽。
 
-## 本次驗證結果
+## 早期版本驗證結果（歷史紀錄）
 
 - Debug APK 編譯成功。
 - JVM 核心測試：7 項通過。
@@ -61,7 +61,7 @@ adb shell am start -n dev.huang.notify.probe/.ProbeActivity --ei id 42 --ez canc
 
 - SemVer 數字順序、Alpha / Beta / 正式版、相同版本、無效版本與拒絕降版。
 - Release 選擇：略過草稿、無 APK、非官方網址，依版本號選取，不依 API 排序。
-- 更新排程：預設關閉、開啟後持續跨重開機、關閉後取消。
+- 更新排程：alpha.2 起檢查預設開啟，明確關閉值保留；排程跨重開機、關閉後取消。自動下載與自動安裝另行選用。
 - 手動實機：允許／拒絕通知權限、關閉通知頻道、離線、GitHub 限流、重開機、省電、點通知到官方 Release。
 - 安裝相同簽章、更高 versionCode 的 APK 後，確認原有資料仍在。
 
@@ -85,4 +85,16 @@ adb shell am start -n dev.huang.notify.probe/.ProbeActivity --ei id 42 --ez canc
 - 更新完成標記跨重啟保留，通知提供重新開啟入口；完成提示可確認並避免重複顯示。
 - 仍需實機驗證：Play Protect／安裝來源限制、真實 APK 自我覆蓋後重新開啟、各廠牌安裝確認與背景排程。
 
-CI 另外以獨立 instrumentation 將 v1.0.0-alpha.1 的真實 APK 升級至 alpha.2，驗證程序替換、通知文字、兩個內容版本、收藏、備註、暫停與保存期限，以及更新完成提示與重新開啟按鈕。測試採同一模擬器的 debug 簽章，正式 APK 仍使用獨立固定 release 簽章。
+alpha.2 的 CI 另外以獨立 instrumentation 將 v1.0.0-alpha.1 的真實 APK 升級至 alpha.2，驗證程序替換、通知文字、兩個內容版本、收藏、備註、暫停與保存期限，以及更新完成提示與重新開啟按鈕。測試採同一模擬器的 debug 簽章，正式 APK 仍使用獨立固定 release 簽章。
+
+
+## 1.0.0-rc.1 驗證結果
+
+程式來源：`469088db0ba98c5b858633b884fbbef45264f532`。CI：[41259906166](https://github.com/ziyuanh100/HuangNotify/actions/runs/41259906166)。
+
+- JVM：10 項通過；Debug／Release 編譯與 Lint 通過。
+- Android 8（API 26）、15（API 35）、16（API 36）模擬器：各 42 項裝置測試通過，共 126 項。
+- 新增回歸涵蓋：取消備份不留失敗狀態、讀回成功但清理失敗保留備份、識別碼衝突完整回滾、拒絕字串及小數數值、更新程序中斷後重試、失敗下載按鈕可重新下載。
+- 三個 API 均實際透過 Android 安裝確認將舊 APK 升級至 RC，並驗證通知、兩個內容版本、收藏、備註、暫停與保存期限保留，以及完成提示與重新開啟。
+- 升級測試使用同一 runner 的 debug 簽章；公開 APK 另以固定 release 簽章簽署並驗證。這不代表完成 Samsung／Play Protect 的實機安裝驗收。
+- 尚未完成 Samsung A55／Android 16 實機 48 小時與跨裝置加密還原。詳細清單見 [候選版驗收](RELEASE-1.0.0-rc.1.md)。
