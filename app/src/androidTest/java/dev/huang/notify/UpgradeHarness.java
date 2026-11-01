@@ -90,6 +90,18 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
         try { require(store.versions(r.id).length()==2,"Version history was lost"); } catch(Exception e) { throw new RuntimeException(e); }
         require(store.setting("paused","0").equals("1") && store.setting("retention","0").equals("30"),"Recording settings were lost");
       }).get();
+      require(Store.get(c).getReadableDatabase().getVersion()==2,"Image schema migration did not run");
+      Store.IO.submit(()->{
+        Store store=Store.get(c); Record old=store.list("",null,false,false,10).get(0);
+        require(old.imageCount==0 && "none".equals(old.imageStatus),"Legacy record image state changed");
+        android.graphics.Bitmap bitmap=android.graphics.Bitmap.createBitmap(8,8,android.graphics.Bitmap.Config.ARGB_8888); bitmap.eraseColor(0xff146c59);
+        NotificationImages.Attachment attachment=NotificationImages.normalize(bitmap); bitmap.recycle();
+        store.putSetting("paused","0");
+        store.capture("image-upgrade","fixture.image","Fixture","圖片升級","保留",3,new NotificationImages.Result(java.util.Collections.singletonList(attachment),"saved"));
+        store.putSetting("paused","1");
+        require(java.util.Arrays.equals(attachment.data,store.image(attachment.hash)),"New image write failed after migration");
+        BackupFormat.validate(store.exportBackup()); return null;
+      }).get();
       // User reopening is the reliable fallback when replacement broadcasts are deferred.
       MainActivity main=(MainActivity)startActivitySync(new Intent(c,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
       long end=SystemClock.elapsedRealtime()+10000;

@@ -83,7 +83,13 @@ public final class CaptureService extends NotificationListenerService {
             } catch (Exception ignored) {
             }
             Store store = Store.get(this);
-            store.capture(key, pkg, app, savedTitle, savedText, posted);
+            if(store.excluded(pkg) || "1".equals(store.setting("paused","0")))return;
+            NotificationImages.Result images=NotificationImages.read(this,n,!"0".equals(store.setting("save_images","1")));
+            try { store.capture(key,pkg,app,savedTitle,savedText,posted,images); }
+            catch(android.database.sqlite.SQLiteException e) {
+              if(images.images.isEmpty())throw e;
+              store.capture(key,pkg,app,savedTitle,savedText,posted,NotificationImages.Result.empty("unavailable"));
+            }
             long now = System.currentTimeMillis();
             if (now - lastCleanup > 3600000L) {
               store.cleanup(Integer.parseInt(store.setting("retention", "0")));

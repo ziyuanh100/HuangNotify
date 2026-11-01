@@ -61,9 +61,9 @@ jobs:
           ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :probe:assembleDebug
           cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/next.apk"
           cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk "$RUNNER_TEMP/upgrade-tests.apk"
-          git fetch --depth=1 origin tag v1.0.0
+          git fetch --depth=1 origin tag v1.0.1
           mkdir -p "$RUNNER_TEMP/huangnotify-previous"
-          git archive v1.0.0 | tar -x -C "$RUNNER_TEMP/huangnotify-previous"
+          git archive v1.0.1 | tar -x -C "$RUNNER_TEMP/huangnotify-previous"
           "$RUNNER_TEMP/huangnotify-previous/gradlew" -p "$RUNNER_TEMP/huangnotify-previous" :app:assembleDebug
           cp "$RUNNER_TEMP/huangnotify-previous/app/build/outputs/apk/debug/app-debug.apk" "$RUNNER_TEMP/previous.apk"
       - name: Enable KVM

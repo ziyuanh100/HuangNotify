@@ -7,7 +7,7 @@ import android.service.notification.StatusBarNotification;
 /** Read only notification-provided metadata. Never fetch image URIs or inspect the screen. */
 final class NotificationText {
   static final int LIMIT=100000;
-  static final String IMAGE="[通知包含圖片；目前僅保存文字，未保存圖片]";
+  static final String IMAGE="[通知包含圖片]";
   final String title, body;
   private NotificationText(String title,String body) { this.title=trim(title); this.body=trim(body); }
   static Object value(Bundle b,String key) { try { return b==null?null:b.get(key); } catch(RuntimeException e) { return null; } }

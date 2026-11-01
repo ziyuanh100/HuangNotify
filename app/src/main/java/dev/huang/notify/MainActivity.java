@@ -641,6 +641,7 @@ public final class MainActivity extends Activity {
               + (r.active && CaptureService.connected
                   ? "仍在通知列"
                   : r.removed > 0 ? "已移除，紀錄已保留" : "已保存")
+              + (r.imageCount>0?"  ·  "+r.imageCount+" 張圖片":(!"none".equals(r.imageStatus)?"  ·  圖片未保存":""))
               + (r.versions > 1 ? "  ·  " + r.versions + " 個版本" : ""));
       try {
         h.icon.setImageDrawable(getPackageManager().getApplicationIcon(r.pkg));
@@ -670,14 +671,15 @@ public final class MainActivity extends Activity {
         () -> {
           try {
             JSONArray versions = Store.get(this).versions(r.id);
-            runOnUiThread(() -> showDetail(r, versions));
+            JSONArray images=Store.get(this).recordImages(r.id);
+            runOnUiThread(() -> showDetail(r, versions,images));
           } catch (Exception e) {
             showError("無法讀取更新歷程");
           }
         });
   }
 
-  private void showDetail(Record r, JSONArray versions) {
+  private void showDetail(Record r, JSONArray versions,JSONArray images) {
     if (isDestroyed()) return;
     LinearLayout body = dialogBody();
     TextView app =
@@ -692,6 +694,7 @@ public final class MainActivity extends Activity {
     text.setTextIsSelectable(true);
     text.setLineSpacing(u.d(5), 1);
     body.addView(text);
+    ImageGallery.add(this,u,body,images,r.imageStatus,true);
     u.gap(body, 16);
     body.addView(
         u.text(
@@ -758,6 +761,7 @@ public final class MainActivity extends Activity {
             u.text(x.optString("title") + "\n" + x.optString("body"), 14, u.muted, false);
         version.setTextIsSelectable(true);
         body.addView(version);
+        ImageGallery.add(this,u,body,x.optJSONArray("images"),x.optString("image_status","none"),false);
       }
     }
     AppDialog dialog = sheet("通知詳情", body);
@@ -768,7 +772,7 @@ public final class MainActivity extends Activity {
         v ->
             new AppDialog.Builder(this)
                 .setTitle("刪除這筆紀錄？")
-                .setMessage("會一併刪除更新歷程；不影響來源 App。此操作無法復原。")
+                .setMessage("會一併刪除更新歷程與不再使用的圖片；不影響來源 App。此操作無法復原。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton(
                     "刪除",
@@ -778,6 +782,28 @@ public final class MainActivity extends Activity {
                     })
                 .show());
   }
+
+  private void imageSetting(LinearLayout parent) {
+    LinearLayout row=u.row(); row.setPadding(u.d(16),u.d(12),u.d(8),u.d(12)); row.setBackground(u.shape(u.surface,18));
+    LinearLayout copy=u.column(); copy.addView(u.text("保存通知圖片",16,u.ink,true));
+    TextView hint=u.text("每則最多 4 張 · 每張 256 KB\n壓縮至最長邊 1440 px；關閉只影響新通知。",12,u.muted,false); copy.addView(hint);
+    row.addView(copy,new LinearLayout.LayoutParams(0,-2,1)); RecordSwitch control=new RecordSwitch(this); control.setContentDescription("保存通知圖片"); control.setEnabled(false); row.addView(control);
+    parent.addView(row); u.gap(parent,8);
+    Store.IO.execute(()->{
+      boolean enabled=!"0".equals(Store.get(this).setting("save_images","1"));
+      runOnUiThread(()->{
+        if(isDestroyed())return; control.setChecked(enabled); control.setEnabled(true);
+        control.setOnCheckedChangeListener((button,checked)->{
+          control.setEnabled(false);
+          Store.IO.execute(()->{
+            boolean success=true; try { Store.get(this).putSetting("save_images",checked?"1":"0"); } catch(Exception e) { success=false; }
+            boolean saved=success; runOnUiThread(()->{ if(isDestroyed())return; if(!saved) { control.setOnCheckedChangeListener(null); control.setChecked(!checked); imageSettingRefresh(); } control.setEnabled(true); toast(saved?(checked?"之後收到的通知將嘗試保存圖片":"已關閉圖片記錄；既有圖片保留"):"無法儲存圖片設定"); });
+          });
+        });
+      });
+    });
+  }
+  private void imageSettingRefresh() { if("settings".equals(page))build(); }
 
   private void editNote(Record r) {
     EditText input = edit("輸入備註");
@@ -827,6 +853,7 @@ public final class MainActivity extends Activity {
     TextView state=u.text(recordingState(),12,u.muted,false); recordStates.add(state); recordingText.addView(state);
     recording.addView(recordingText,new LinearLayout.LayoutParams(0,-2,1)); recording.addView(recordSwitch());
     inner.addView(recording); u.gap(inner,8);
+    imageSetting(inner);
     settingRow(inner, "選擇記錄來源", "全部已安裝 App · 搜尋、分類與排除", "settings", this::manageApps);
     settingRow(
         inner,
@@ -1119,7 +1146,7 @@ public final class MainActivity extends Activity {
                 + "• App 向 GitHub 檢查公開版本及下載更新，不上傳通知內容；沒有廣告或分析追蹤。\n"
                 + "• 不會代你清除通知或回覆訊息。\n"
                 + "• 系統自動備份已停用，手動匯出與選用自動備份會寫入你選擇的位置；若選雲端資料夾，檔案會由該服務保存。\n\n"
-                + "第一版保存通知文字，不下載圖片或附件。來源 App 未提供的內容，以及系統遮蔽的敏感內容，無法還原。\n\n"
+                + "保存通知文字與系統提供且允許讀取的圖片，每則最多 4 張、每張 256 KB、最長邊 1440 px。只讀通知附帶的本機圖片，不掃描相簿、不直接下載網路圖片，也不保存 App 頭像。可在設定關閉新圖片記錄，既有圖片會保留。來源 App 未提供的內容，以及系統遮蔽的敏感內容，無法還原。\n\n"
                 + "首次連線會補存目前仍在通知列的通知。服務中斷期間已消失的通知可能漏記；重連時會核對仍存在的通知。\n\n"
                 + "解除安裝或清除 App 資料會刪除紀錄，請先匯出備份。")
         .setPositiveButton("了解", null)
@@ -1132,7 +1159,7 @@ public final class MainActivity extends Activity {
       return;
     }
     LinearLayout body = dialogBody();
-    body.addView(u.text("備份包含通知文字、更新歷程、收藏、備註及保存設定。加密密碼遺失後無法還原。", 14, u.muted, false));
+    body.addView(u.text("備份 v2 包含通知文字、已保存圖片、更新歷程、收藏、備註及保存設定，總上限 20 MB。舊版 App 無法讀取 v2；新版仍可匯入 v1。加密密碼遺失後無法還原。", 14, u.muted, false));
     u.gap(body, 12);
     EditText password = edit("設定備份密碼（至少 8 個字元）");
     password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);

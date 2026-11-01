@@ -11,13 +11,14 @@ import java.util.concurrent.TimeUnit;
 @SuppressWarnings("deprecation")
 public class CaptureFlowTest extends InstrumentationTestCase {
   private static final String PROBE="dev.huang.notify.probe", COMPONENT="dev.huang.notify/dev.huang.notify.CaptureService";
-  private Context c; private boolean wasGranted; private String paused,excluded,listenerSetting;
+  private Context c; private boolean wasGranted; private String paused,excluded,listenerSetting,imageSetting;
+  private String kind="screenshot";
   @Override protected void setUp() throws Exception {
     super.setUp(); c=getInstrumentation().getTargetContext(); wasGranted=PermissionGuide.hasAccess(c);
     String[] previous=Store.IO.submit(()->{
-      Store s=Store.get(c); String[] old={s.setting("paused","0"),s.setting("exclude:"+PROBE,"0")};
-      s.putSetting("paused","0"); s.putSetting("exclude:"+PROBE,"0"); s.getWritableDatabase().delete("records","pkg=?",new String[]{PROBE}); return old;
-    }).get(10,TimeUnit.SECONDS); paused=previous[0]; excluded=previous[1];
+      Store s=Store.get(c); String[] old={s.setting("paused","0"),s.setting("exclude:"+PROBE,"0"),s.setting("save_images","1")};
+      s.putSetting("save_images","1"); s.putSetting("paused","0"); s.putSetting("exclude:"+PROBE,"0"); s.getWritableDatabase().delete("records","pkg=?",new String[]{PROBE}); return old;
+    }).get(10,TimeUnit.SECONDS); paused=previous[0]; excluded=previous[1]; imageSetting=previous[2];
     if(Build.VERSION.SDK_INT>=33) shell("pm grant "+PROBE+" android.permission.POST_NOTIFICATIONS");
     if(Build.VERSION.SDK_INT>=28) shell("cmd notification allow_listener "+COMPONENT);
     else {
@@ -38,29 +39,47 @@ public class CaptureFlowTest extends InstrumentationTestCase {
         else shell("settings put secure enabled_notification_listeners "+listenerSetting);
       }
       Store.IO.submit(()->{
-        Store s=Store.get(c); s.getWritableDatabase().delete("records","pkg=?",new String[]{PROBE}); s.putSetting("paused",paused); s.putSetting("exclude:"+PROBE,excluded);
+        Store s=Store.get(c); s.getWritableDatabase().delete("records","pkg=?",new String[]{PROBE}); s.putSetting("save_images",imageSetting); s.putSetting("paused",paused); s.putSetting("exclude:"+PROBE,excluded);
       }).get(10,TimeUnit.SECONDS);
     } finally { super.tearDown(); }
   }
   public void testScreenshotSummaryIsRecordedAndSurvivesRemoval() throws Exception {
     probe(false);
-    Record saved=awaitRecord(true); assertEquals("截圖已儲存",saved.title); assertTrue(saved.text.contains("未保存圖片"));
+    Record saved=awaitRecord(true); assertEquals("截圖已儲存",saved.title); assertTrue(saved.text.contains("通知包含圖片")); assertEquals(1,saved.imageCount); assertEquals("saved",saved.imageStatus);
+    String hash=Store.IO.submit(()->Store.get(c).recordImages(saved.id).getString(0)).get();
+    byte[] original=Store.IO.submit(()->Store.get(c).image(hash)).get(); assertNotNull(original);
     assertEquals(1,Store.IO.submit(()->Store.get(c).list("",PROBE,false,false,20).size()).get().intValue());
     probe(true);
-    Record removed=awaitRecord(false); assertEquals(saved.id,removed.id); assertEquals(saved.text,removed.text);
-    org.json.JSONObject backup=Store.IO.submit(()->Store.get(c).exportBackup()).get(); BackupFormat.validate(backup);
+    Record removed=awaitRecord(false); assertEquals(saved.id,removed.id); assertEquals(saved.text,removed.text); assertEquals(1,removed.imageCount); assertTrue(java.util.Arrays.equals(original,Store.IO.submit(()->Store.get(c).image(hash)).get()));
+    org.json.JSONObject backup=Store.IO.submit(()->Store.get(c).exportBackup()).get(); BackupFormat.validate(backup); assertEquals(2,backup.getInt("version"));
+  }
+  public void testMessagingImageUriIsCopiedBeforePermissionExpires() throws Exception {
+    kind="message-image"; probe(false); Record saved=awaitRecord(true);
+    assertEquals("saved",saved.imageStatus); assertEquals(1,saved.imageCount);
+    String hash=Store.IO.submit(()->Store.get(c).recordImages(saved.id).getString(0)).get();
+    byte[] bytes=Store.IO.submit(()->Store.get(c).image(hash)).get(); assertNotNull(bytes);
+    probe(true); Record removed=awaitRecord(false); assertEquals(saved.id,removed.id);
+    assertTrue(Arrays.equals(bytes,Store.IO.submit(()->Store.get(c).image(hash)).get()));
+  }
+  public void testUnreadableImageKeepsTheNotificationText() throws Exception {
+    kind="denied-image"; probe(false); Record saved=awaitRecord(true);
+    assertEquals("unavailable",saved.imageStatus); assertEquals(0,saved.imageCount); assertTrue(saved.text.contains("圖片說明"));
+  }
+  public void testDisabledImageRecordingKeepsTextWithoutSavingPixels() throws Exception {
+    Store.IO.submit(()->Store.get(c).putSetting("save_images","0")).get();
+    probe(false); Record saved=awaitRecord(true); assertEquals("disabled",saved.imageStatus); assertEquals(0,saved.imageCount);
   }
   private Record awaitRecord(boolean active) throws Exception {
     long deadline=SystemClock.elapsedRealtime()+12000;
     while(SystemClock.elapsedRealtime()<deadline) {
       List<Record> records=Store.IO.submit(()->Store.get(c).list("",PROBE,false,false,20)).get(5,TimeUnit.SECONDS);
-      for(Record r:records) if(r.title.equals("截圖已儲存") && r.active==active) return r;
+      for(Record r:records) if(r.active==active) return r;
       SystemClock.sleep(100);
     } throw new AssertionError("Screenshot notification not recorded with active="+active+"; "+Store.error);
   }
   private void probe(boolean cancel) {
     android.content.Intent intent=new android.content.Intent().setClassName(PROBE,PROBE+".ProbeActivity")
-        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("id",901).putExtra("cancel",cancel).putExtra("kind","screenshot");
+        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("id",901).putExtra("cancel",cancel).putExtra("kind",kind);
     c.startActivity(intent);
   }
   private String shell(String command) throws Exception {

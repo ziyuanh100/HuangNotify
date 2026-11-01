@@ -34,7 +34,7 @@ final class PermissionGuide {
       final boolean returned = step == 1;
       dialog = new AppDialog.Builder(activity)
           .setTitle(returned ? "通知存取權還沒開啟" : "先讓通知好好留下")
-          .setMessage("步驟 1 / 2 · 保存通知\n\nHuangNotify 需要「通知存取權」，才能保存其他 App 顯示的通知文字。紀錄只存手機，不會上傳。\n\n接著會開啟 Android 系統設定，請啟用 HuangNotify。你可以稍後再設定；尚未授權時不會記錄通知。")
+          .setMessage("步驟 1 / 2 · 保存通知\n\nHuangNotify 需要「通知存取權」，才能保存其他 App 顯示的通知文字與可讀取的圖片。紀錄只存手機，不會上傳。\n\n接著會開啟 Android 系統設定，請啟用 HuangNotify。你可以稍後再設定；尚未授權時不會記錄通知。")
           .setPositiveButton(returned ? "再到系統設定" : "開始設定", (d, w) -> {
             step(1);
             try { openListenerSettings(activity); }
