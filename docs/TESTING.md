@@ -98,3 +98,17 @@ alpha.2 的 CI 另外以獨立 instrumentation 將 v1.0.0-alpha.1 的真實 APK 
 - 三個 API 均實際透過 Android 安裝確認將舊 APK 升級至 RC，並驗證通知、兩個內容版本、收藏、備註、暫停與保存期限保留，以及完成提示與重新開啟。
 - 升級測試使用同一 runner 的 debug 簽章；公開 APK 另以固定 release 簽章簽署並驗證。這不代表完成 Samsung／Play Protect 的實機安裝驗收。
 - 尚未完成 Samsung A55／Android 16 實機 48 小時與跨裝置加密還原。詳細清單見 [候選版驗收](RELEASE-1.0.0-rc.1.md)。
+
+
+## 1.0.0-rc.2 來源清單驗證
+
+程式建置來源：`3e2b2ba0e2c6cf2f1a1880d17037e46bf2ecf6d9`；CI：[41263179566](https://github.com/ziyuanh100/HuangNotify/actions/runs/41263179566)。
+
+- JVM 10 項與 Android 8／15／16 各 52 項裝置測試通過，共 166 項；Debug／Release 與 Lint 通過。
+- 實際安裝沒有 MAIN／LAUNCHER intent filter 的通知測試工具，驗證在沒有通知歷史時仍列入清單；該測試工具不包含在公開 APK。
+- 驗證目前使用者已安裝 App、系統／停用狀態、歷史來源、同名不同套件、舊排除值與去重。
+- 驗證第一則通知前預先排除、恢復允許、批次選擇的交易完整性；搜尋／分類後全選只影響目前結果。
+- 驗證取消不儲存、回收列不串用勾選、1,000 個來源的列回收、實際設定入口、深色 180% 字型及縮短視窗仍可搜尋與儲存；保存介面截圖。
+- 三個 API 的舊 APK 經系統確認升級、資料保留、完成提示與重新開啟均通過。CI 使用同 runner 的 debug 簽章；公開 APK 使用固定 release 簽章。
+- QUERY_ALL_PACKAGES 的 Lint 例外僅限該權限宣告：完整來源清單是本次明確需求，scoped queries 無法涵蓋未知且沒有 intent filter 的已安裝 App；未全面關閉 Lint。若上架 Google Play，須另作該商店權限審核。
+- 本次只修正來源選擇清單；不代表已驗證所有第三方 App 的通知擷取。Samsung A55 的長時間背景與跨裝置還原實機驗收仍待完成。
