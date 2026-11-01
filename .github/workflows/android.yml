@@ -88,6 +88,10 @@ jobs:
             adb push "$RUNNER_TEMP/next.apk" /data/local/tmp/huangnotify-next.apk
             adb shell appops set dev.huang.notify REQUEST_INSTALL_PACKAGES allow
             adb shell am instrument -w -e phase before dev.huang.notify.test/dev.huang.notify.UpgradeHarness > upgrade-before.txt || true
+            adb shell screencap -p /data/local/tmp/upgrade-installer.png
+            adb pull /data/local/tmp/upgrade-installer.png upgrade-installer.png
+            adb shell uiautomator dump /data/local/tmp/upgrade-installer.xml || true
+            adb pull /data/local/tmp/upgrade-installer.xml upgrade-installer.xml || true
             adb shell am instrument -w -e phase after dev.huang.notify.test/dev.huang.notify.UpgradeHarness > upgrade-after.txt
             grep -q 'INSTRUMENTATION_CODE: -1' upgrade-after.txt
       - uses: actions/upload-artifact@v4
@@ -105,4 +109,4 @@ jobs:
         if: always()
         with:
           name: self-update-cycle-api-${{ matrix.api }}
-          path: upgrade-*.txt
+          path: upgrade-*

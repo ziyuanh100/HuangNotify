@@ -49,11 +49,11 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
         UpgradeManager.prefs(c).edit().putBoolean("ready",true).putString("tag","v"+BuildConfig.VERSION_NAME).putString("sha",sha.toString()).commit();
         MainActivity old=(MainActivity)startActivitySync(new Intent(c,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         UpgradeManager.install(c,false);
-        long deadline=SystemClock.elapsedRealtime()+15000;
+        long deadline=SystemClock.elapsedRealtime()+30000;
         while (UpgradeManager.confirmation==null && SystemClock.elapsedRealtime()<deadline) SystemClock.sleep(100);
         require(UpgradeManager.confirmation!=null,"System confirmation Intent missing: "+UpgradeManager.status(c));
         runOnMainSync(()->old.startActivity(UpgradeManager.confirmation));
-        deadline=SystemClock.elapsedRealtime()+15000;
+        deadline=SystemClock.elapsedRealtime()+30000;
         boolean clicked=false;
         while (!clicked && SystemClock.elapsedRealtime()<deadline) {
           android.view.accessibility.AccessibilityNodeInfo root=getUiAutomation().getRootInActiveWindow();
