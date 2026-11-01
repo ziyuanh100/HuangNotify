@@ -862,7 +862,7 @@ public final class MainActivity extends Activity {
         "bell",
         this::chooseRetention);
     section(inner, "備份與資料");
-    settingRow(inner, "建立備份", "匯出紀錄與歷程，可使用密碼加密", "backup", this::exportDialog);
+    settingRow(inner, "建立備份", "匯出通知、圖片與歷程，可使用密碼加密", "backup", this::exportDialog);
     settingRow(inner, "自動加密備份", "每日備份至指定資料夾，可設定保留份數", "backup", this::autoBackupDialog);
     backupStatus=u.text(AutoBackup.status(this),12,u.muted,false); inner.addView(backupStatus);
     settingRow(inner, "還原備份", "預覽後合併匯入，略過重複紀錄", "backup", this::chooseImport);
@@ -1410,12 +1410,12 @@ public final class MainActivity extends Activity {
                               + date(backup.optLong("created"), "yyyy/MM/dd HH:mm")
                               + "\n包含 "
                               + format(count)
-                              + " 則通知\n\n匯入時保留手機現有內容，以識別碼略過重複紀錄，並補入缺少的更新版本。",
+                              + " 則通知 · " + (backup.optJSONArray("images")==null?0:backup.optJSONArray("images").length()) + " 張圖片\n\n匯入時保留手機現有內容，以識別碼略過重複紀錄，並補入缺少的更新版本。",
                           15,
                           u.ink,
                           false));
                   AppDialog.Toggle settings = new AppDialog.Toggle(this);
-                  settings.setText("同時還原保存期限與排除 App 設定");
+                  settings.setText("同時還原保存期限、圖片記錄與來源設定");
                   settings.setTextColor(u.ink);
                   body.addView(settings);
                   AppDialog dialog =

@@ -53,10 +53,16 @@ public class CaptureFlowTest extends InstrumentationTestCase {
     Record removed=awaitRecord(false); assertEquals(saved.id,removed.id); assertEquals(saved.text,removed.text); assertEquals(1,removed.imageCount); assertTrue(java.util.Arrays.equals(original,Store.IO.submit(()->Store.get(c).image(hash)).get()));
     org.json.JSONObject backup=Store.IO.submit(()->Store.get(c).exportBackup()).get(); BackupFormat.validate(backup); assertEquals(2,backup.getInt("version"));
   }
-  public void testMessagingImageUriIsCopiedBeforePermissionExpires() throws Exception {
+  public void testMessagingImageRespectsAvailableUriGrants() throws Exception {
     kind="message-image"; probe(false); Record saved=awaitRecord(true);
+    if(Build.VERSION.SDK_INT<28) {
+      // Android 8 has no NLS URI auto-grant: first prove denial, then a source-owned explicit grant.
+      assertEquals("unavailable",saved.imageStatus); assertTrue(saved.text.contains("圖片說明")); probe(true); awaitRecord(false);
+      kind="message-image-granted"; probe(false); saved=awaitRecord(true);
+    }
     assertEquals("saved",saved.imageStatus); assertEquals(1,saved.imageCount);
-    String hash=Store.IO.submit(()->Store.get(c).recordImages(saved.id).getString(0)).get();
+    Record copied=saved;
+    String hash=Store.IO.submit(()->Store.get(c).recordImages(copied.id).getString(0)).get();
     byte[] bytes=Store.IO.submit(()->Store.get(c).image(hash)).get(); assertNotNull(bytes);
     probe(true); Record removed=awaitRecord(false); assertEquals(saved.id,removed.id);
     assertTrue(Arrays.equals(bytes,Store.IO.submit(()->Store.get(c).image(hash)).get()));

@@ -15,7 +15,7 @@ public final class ProbeActivity extends Activity {
     manager.createNotificationChannel(
         new NotificationChannel("test", "測試通知", NotificationManager.IMPORTANCE_DEFAULT));
     int id = getIntent().getIntExtra("id", 42);
-    if (getIntent().getBooleanExtra("cancel", false)) manager.cancel(id);
+    if (getIntent().getBooleanExtra("cancel", false)) { manager.cancel(id); revokeUriPermission(android.net.Uri.parse("content://dev.huang.notify.probe.images/picture"),android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION); }
     else {
       String title = getIntent().getStringExtra("title"), text = getIntent().getStringExtra("text");
       String kind=getIntent().getStringExtra("kind");
@@ -29,12 +29,13 @@ public final class ProbeActivity extends Activity {
         paint.setTextSize(18); canvas.drawText("Notification image fixture",28,96,paint);
         builder.setContentTitle("截圖已儲存").setGroup("screenshot-only").setGroupSummary(true)
             .setStyle(new Notification.BigPictureStyle().bigPicture(image));
-      } else if("message-image".equals(kind) || "denied-image".equals(kind)) {
+      } else if("message-image".equals(kind) || "message-image-granted".equals(kind) || "denied-image".equals(kind)) {
         android.graphics.Bitmap picture=android.graphics.Bitmap.createBitmap(96,64,android.graphics.Bitmap.Config.ARGB_8888); picture.eraseColor(0xff146c59);
         try(java.io.FileOutputStream out=new java.io.FileOutputStream(new java.io.File(getCacheDir(),"notification-picture.png"))) { picture.compress(android.graphics.Bitmap.CompressFormat.PNG,100,out); }
         catch(java.io.IOException e) { throw new IllegalStateException(e); }
         picture.recycle();
         android.net.Uri uri=android.net.Uri.parse("content://dev.huang.notify.probe.images/"+("denied-image".equals(kind)?"missing":"picture"));
+        if("message-image-granted".equals(kind))grantUriPermission("dev.huang.notify",uri,android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
         Notification.MessagingStyle.Message message=new Notification.MessagingStyle.Message("圖片說明",System.currentTimeMillis(),(CharSequence)"相機").setData("image/png",uri);
         builder.setStyle(new Notification.MessagingStyle("你").addMessage(message));
       } else builder.setContentTitle(title==null?"通知保存測試":title).setContentText(text==null?"即使通知消失，這段內容仍會留下。":text)

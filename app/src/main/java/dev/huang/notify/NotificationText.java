@@ -30,7 +30,7 @@ final class NotificationText {
       StringBuilder joined=new StringBuilder(); for(CharSequence item:(CharSequence[])lines) line(joined,text(item));
       if(joined.length()>0) body=joined.toString();
     }
-    Object messages=value(b,Notification.EXTRA_MESSAGES); StringBuilder joined=new StringBuilder();
+    Object messages=value(b,Notification.EXTRA_MESSAGES); StringBuilder joined=new StringBuilder(); boolean readableMessage=false;
     if(messages instanceof Parcelable[]) for(Parcelable entry:(Parcelable[])messages) {
       if(!(entry instanceof Bundle)) continue;
       try {
@@ -47,11 +47,12 @@ final class NotificationText {
             sender=text(((android.app.Person)value(m,"sender_person")).getName());
           Object type=value(m,"type"); if(type instanceof String) mime=(String)type;
         }
+        if(!blank(content))readableMessage=true;
         if(blank(content) && mime!=null && mime.startsWith("image/")) content=IMAGE;
         if(!blank(content)) line(joined,blank(sender)?content:sender+"："+content);
       } catch(RuntimeException ignored) { /* One malformed message must not discard the notification. */ }
     }
-    if(joined.length()>0) body=joined.toString();
+    if(joined.length()>0 && (readableMessage || blank(body))) body=joined.toString();
     body=first(body,text(value(b,Notification.EXTRA_SUMMARY_TEXT)));
     body=first(body,text(n.tickerText));
     boolean picture=value(b,Notification.EXTRA_PICTURE)!=null;

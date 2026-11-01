@@ -119,3 +119,5 @@ Debug APK 僅供測試。正式對外發行前請自行建立並保管 release s
 ## 開源
 
 MIT License。歡迎提交 issue 與 pull request。回報問題請先移除通知內容中的個資；不要公開自己的備份檔。
+
+Android 8 的私有圖片 URI 不會自動授權給通知監聽器；只有來源已提供可讀權限時才能複製，否則仍保留文字並顯示圖片未保存。BigPicture 直接附帶的圖片不需要這項 URI 授權。

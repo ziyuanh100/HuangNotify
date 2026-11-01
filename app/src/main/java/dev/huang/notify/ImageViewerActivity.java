@@ -14,6 +14,8 @@ public final class ImageViewerActivity extends Activity {
   private String hash; private ZoomView image; private TextView state,save;
   @Override public void onCreate(Bundle bundle) {
     super.onCreate(bundle); Ui u=new Ui(this); hash=getIntent().getStringExtra("image_hash");
+    getWindow().setStatusBarColor(u.bg); getWindow().setNavigationBarColor(u.bg);
+    getWindow().getDecorView().setSystemUiVisibility(u.dark?0:View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
     LinearLayout root=u.column(); root.setBackgroundColor(u.bg);
     root.setOnApplyWindowInsetsListener((v,insets)->{
       if(android.os.Build.VERSION.SDK_INT>=30) { Insets s=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout()); v.setPadding(s.left,s.top,s.right,s.bottom); return WindowInsets.CONSUMED; }
