@@ -22,6 +22,19 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
     }
     return false;
   }
+  /** CI emulator recovery only: never dismiss an ANR belonging to the app under test. */
+  private boolean closeQuickstepAnr(android.view.accessibility.AccessibilityNodeInfo root) {
+    boolean quickstep=false;
+    for(android.view.accessibility.AccessibilityNodeInfo title:root.findAccessibilityNodeInfosByViewId("android:id/alertTitle"))
+      if("Quickstep isn't responding".contentEquals(title.getText()==null?"":title.getText())) quickstep=true;
+    if(!quickstep) return false;
+    for(android.view.accessibility.AccessibilityNodeInfo button:root.findAccessibilityNodeInfosByViewId("android:id/aerr_close"))
+      if("android".contentEquals(button.getPackageName()==null?"":button.getPackageName()) && button.isEnabled() && button.isClickable()) {
+        Bundle diagnostic=new Bundle(); diagnostic.putString("emulator_recovery","Quickstep launcher ANR obscured installer; closing that launcher only"); sendStatus(0,diagnostic);
+        return button.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK);
+      }
+    return false;
+  }
   private void require(boolean value,String error) { if(!value) throw new AssertionError(error); }
   @Override public void onStart() {
     if (phase.isEmpty()) { super.onStart(); return; }
@@ -54,10 +67,13 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
         require(UpgradeManager.confirmation!=null,"System confirmation Intent missing: "+UpgradeManager.status(c));
         runOnMainSync(()->old.startActivity(UpgradeManager.confirmation));
         deadline=SystemClock.elapsedRealtime()+30000;
-        boolean clicked=false;
+        boolean clicked=false, launcherRecovered=false;
         while (!clicked && SystemClock.elapsedRealtime()<deadline) {
           android.view.accessibility.AccessibilityNodeInfo root=getUiAutomation().getRootInActiveWindow();
-          if(root!=null) clicked=confirmInstall(root);
+          if(root!=null) {
+            if(!launcherRecovered && closeQuickstepAnr(root)) { launcherRecovered=true; deadline=SystemClock.elapsedRealtime()+30000; }
+            else clicked=confirmInstall(root);
+          }
           if(!clicked) SystemClock.sleep(100);
         }
         require(clicked,"System install confirmation button missing");
