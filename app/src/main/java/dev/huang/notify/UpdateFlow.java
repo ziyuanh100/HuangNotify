@@ -14,7 +14,7 @@ final class UpdateFlow {
   private final Handler handler=new Handler(Looper.getMainLooper());
   private boolean entered,resumed,working,destroyed;
   private int epoch, confirmationSession=-1;
-  private UpdateChecker.Result pending;
+  private UpdateChecker.Result pending, lastDownload;
   AppDialog dialog;
   interface DownloadAction { void start(UpdateChecker.Result result); }
   DownloadAction download;
@@ -55,7 +55,7 @@ final class UpdateFlow {
       .setNegativeButton(result.available()?"稍後再說":"關閉",null);
     if (result.installable()) offer.setPositiveButton("現在更新",(d,w)->{
       UpgradeManager.prefs(activity).edit().putBoolean("show_progress",true).apply();
-      download.start(result); progress();
+      lastDownload=result; download.start(result); progress();
     });
     else if(result.available()) offer.setMessage(result.message+"\n\n此版本缺少完整驗證資訊，暫時不能在 App 內安裝，請查看官方版本說明。");
     if(result.available()) offer.setNeutralButton("版本說明",(d,w)->{
@@ -88,13 +88,20 @@ final class UpdateFlow {
     progress.setIndeterminate(!stage.equals("downloading") && !ready && !stage.equals("failed"));
     progress.setProgress(ready?100:UpgradeManager.prefs(activity).getInt("progress",0));
     TextView button=dialog.getButton(AppDialog.BUTTON_POSITIVE); if(button==null) return;
-    button.setEnabled(ready && !stage.equals("installing")); button.setAlpha(button.isEnabled()?1f:.5f);
-    button.setText(!ready?stage.equals("failed")?"下載未完成":"下載與驗證中…":!activity.getPackageManager().canRequestPackageInstalls()?"允許安裝更新":stage.equals("confirm")?"確認安裝":stage.equals("installing")?"等待 Android 完成…":"安裝更新");
+    button.setEnabled((ready && !stage.equals("installing")) || stage.equals("failed")); button.setAlpha(button.isEnabled()?1f:.5f);
+    button.setText(!ready?stage.equals("failed")?"重新下載":"下載與驗證中…":!activity.getPackageManager().canRequestPackageInstalls()?"允許安裝更新":stage.equals("confirm")?"確認安裝":stage.equals("installing")?"等待 Android 完成…":stage.equals("retry") || stage.equals("failed")?"再次安裝":"安裝更新");
     if (ready && stage.equals("ready") && activity.getPackageManager().canRequestPackageInstalls()) advance();
     if (stage.equals("confirm") && UpgradeManager.confirmation!=null && confirmationSession!=UpgradeManager.prefs(activity).getInt("session",-1)) advance();
   }
   private void advance() {
-    if (!UpgradeManager.prefs(activity).getBoolean("ready",false)) return;
+    if (!UpgradeManager.prefs(activity).getBoolean("ready",false)) {
+      if ("failed".equals(UpgradeManager.prefs(activity).getString("stage",""))) {
+        UpdateChecker.Result result=lastDownload==null?UpdateChecker.cached(activity):lastDownload;
+        if (result.installable() && UpgradeManager.allowedVersion(activity,result.tag)) { lastDownload=result; download.start(result); renderProgress(); }
+        else { closeProgress(); dialog.dismiss(); check(true); }
+      }
+      return;
+    }
     if (!activity.getPackageManager().canRequestPackageInstalls()) {
       try { activity.startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:"+activity.getPackageName()))); }
       catch(Exception e) { detail.setText("請在系統設定允許 HuangNotify 安裝更新，回來後繼續。"); }

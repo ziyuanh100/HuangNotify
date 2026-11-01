@@ -11,6 +11,17 @@ import java.util.Locale;
 public final class UpgradeHarness extends android.test.InstrumentationTestRunner {
   private String phase;
   @Override public void onCreate(Bundle arguments) { phase=arguments.getString("phase",""); if (phase.isEmpty()) super.onCreate(arguments); else start(); }
+  private boolean confirmInstall(android.view.accessibility.AccessibilityNodeInfo node) {
+    CharSequence label=node.getText(), pkg=node.getPackageName();
+    if(pkg!=null && pkg.toString().contains("packageinstaller") && label!=null
+        && (label.toString().equalsIgnoreCase("Update") || label.toString().equalsIgnoreCase("Install"))
+        && node.isEnabled() && node.isClickable()) return node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK);
+    for(int i=0;i<node.getChildCount();i++) {
+      android.view.accessibility.AccessibilityNodeInfo child=node.getChild(i);
+      if(child!=null && confirmInstall(child)) return true;
+    }
+    return false;
+  }
   private void require(boolean value,String error) { if(!value) throw new AssertionError(error); }
   @Override public void onStart() {
     if (phase.isEmpty()) { super.onStart(); return; }
@@ -35,14 +46,27 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
         try(InputStream in=new FileInputStream(target)) { byte[] buffer=new byte[16384]; int n; while((n=in.read(buffer))!=-1)digest.update(buffer,0,n); }
         StringBuilder sha=new StringBuilder(); for(byte b:digest.digest()) sha.append(String.format(Locale.ROOT,"%02x",b&255));
         UpgradeManager.configure(c,true,true);
-        UpgradeManager.prefs(c).edit().putBoolean("ready",true).putString("tag","v1.0.0-alpha.2").putString("sha",sha.toString()).commit();
-        UpgradeManager.install(c,true);
+        UpgradeManager.prefs(c).edit().putBoolean("ready",true).putString("tag","v"+BuildConfig.VERSION_NAME).putString("sha",sha.toString()).commit();
+        MainActivity old=(MainActivity)startActivitySync(new Intent(c,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        UpgradeManager.install(c,false);
+        long deadline=SystemClock.elapsedRealtime()+15000;
+        while (UpgradeManager.confirmation==null && SystemClock.elapsedRealtime()<deadline) SystemClock.sleep(100);
+        require(UpgradeManager.confirmation!=null,"System confirmation Intent missing: "+UpgradeManager.status(c));
+        runOnMainSync(()->old.startActivity(UpgradeManager.confirmation));
+        deadline=SystemClock.elapsedRealtime()+15000;
+        boolean clicked=false;
+        while (!clicked && SystemClock.elapsedRealtime()<deadline) {
+          android.view.accessibility.AccessibilityNodeInfo root=getUiAutomation().getRootInActiveWindow();
+          if(root!=null) clicked=confirmInstall(root);
+          if(!clicked) SystemClock.sleep(100);
+        }
+        require(clicked,"System install confirmation button missing");
         // Successful self update intentionally terminates this old instrumentation process.
         SystemClock.sleep(20000);
         throw new AssertionError("Old process was not replaced: "+UpgradeManager.status(c));
       }
       require(phase.equals("after"),"Unknown harness phase");
-      require(c.getPackageManager().getPackageInfo(c.getPackageName(),0).versionName.equals("1.0.0-alpha.2"),"New APK was not installed");
+      require(c.getPackageManager().getPackageInfo(c.getPackageName(),0).versionName.equals(BuildConfig.VERSION_NAME),"New APK was not installed");
       Store.IO.submit(()->{
         Store store=Store.get(c); java.util.List<Record> records=store.list("",null,false,false,10);
         require(records.size()==1,"Record missing after upgrade"); Record r=records.get(0);

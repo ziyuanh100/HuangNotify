@@ -128,6 +128,7 @@ public final class MainActivity extends Activity {
     setContentView(root);
     if (getIntent().getBooleanExtra("open_updates",false)) page="settings";
     UpgradeManager.reconcile(this);
+    UpgradeManager.recover(this);
     AutoBackup.schedule(this);
     build();
     Store.IO.execute(
@@ -1024,13 +1025,7 @@ public final class MainActivity extends Activity {
   }
 
   private boolean hasAccess() {
-    String enabled =
-        Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
-    if (enabled == null) return false;
-    ComponentName target = new ComponentName(this, CaptureService.class);
-    for (String item : enabled.split(":"))
-      if (target.equals(ComponentName.unflattenFromString(item))) return true;
-    return false;
+    return PermissionGuide.hasAccess(this);
   }
 
   private void chooseRetention() {

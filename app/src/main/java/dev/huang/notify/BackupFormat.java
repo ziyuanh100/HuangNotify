@@ -9,9 +9,18 @@ import org.json.JSONObject;
 public final class BackupFormat {
   private BackupFormat() {}
 
+  private static long integer(JSONObject object, String name, long min, long max) throws Exception {
+    Object value=object.get(name);
+    if (!(value instanceof Integer) && !(value instanceof Long)) throw new IllegalArgumentException("備份整數欄位格式錯誤："+name);
+    long number=((Number)value).longValue();
+    if (number<min || number>max) throw new IllegalArgumentException("備份數值超出範圍："+name);
+    return number;
+  }
+
   public static void validate(JSONObject root) throws Exception {
-    if (!"HuangNotify".equals(root.getString("format")) || root.getInt("version") != 1)
+    if (!"HuangNotify".equals(root.getString("format")) || integer(root, "version", 1, 1) != 1)
       throw new IllegalArgumentException("不支援的備份格式或版本");
+    integer(root, "created", 0, 32503680000000L);
     JSONArray rows = root.getJSONArray("records");
     if (rows.length() > 100000) throw new IllegalArgumentException("備份筆數超過上限");
     Set<String> ids = new HashSet<>(), versionIds = new HashSet<>();
@@ -28,14 +37,9 @@ public final class BackupFormat {
       if (o.getString("pkg").trim().isEmpty() || o.getString("pkg").length() > 255)
         throw new IllegalArgumentException("App 識別碼錯誤");
       for (String n : new String[] {"posted", "first_seen", "updated", "removed"}) {
-        Object value = o.get(n);
-        if (!(value instanceof Number) || o.getLong(n) < 0 || o.getLong(n) > 32503680000000L)
-          throw new IllegalArgumentException("通知日期錯誤");
+        integer(o, n, 0, 32503680000000L);
       }
-      if (o.getInt("favorite") < 0
-          || o.getInt("favorite") > 1
-          || o.getInt("reason") < 0
-          || o.getInt("reason") > 1000) throw new IllegalArgumentException("通知狀態錯誤");
+      integer(o, "favorite", 0, 1); integer(o, "reason", 0, 1000);
       JSONArray versions = o.getJSONArray("versions");
       if (versions.length() == 0 || (versionCount += versions.length()) > 200000)
         throw new IllegalArgumentException("更新歷程數量錯誤");
@@ -44,8 +48,7 @@ public final class BackupFormat {
         String vid = v.getString("id");
         UUID.fromString(vid);
         if (!versionIds.add(vid)) throw new IllegalArgumentException("重複的更新歷程識別碼");
-        if (v.getLong("time") < 0 || v.getLong("time") > 32503680000000L)
-          throw new IllegalArgumentException("更新日期錯誤");
+        integer(v, "time", 0, 32503680000000L);
         for (String n : new String[] {"title", "body"})
           if (!(v.get(n) instanceof String) || v.getString(n).length() > 100000)
             throw new IllegalArgumentException("更新內容錯誤");
@@ -54,7 +57,9 @@ public final class BackupFormat {
     JSONObject settings = root.getJSONObject("settings");
     java.util.Iterator<String> names = settings.keys();
     while (names.hasNext()) {
-      String n = names.next(), value = settings.getString(n);
+      String n = names.next();
+      if (!(settings.get(n) instanceof String)) throw new IllegalArgumentException("備份設定格式錯誤");
+      String value = settings.getString(n);
       if (n.equals("retention")) {
         if (!java.util.Arrays.asList("0", "7", "30", "90", "365").contains(value))
           throw new IllegalArgumentException("保存期限錯誤");

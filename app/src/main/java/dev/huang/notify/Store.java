@@ -365,8 +365,10 @@ public final class Store extends SQLiteOpenHelper {
         JSONObject o = rows.getJSONObject(i);
         String id = o.getString("id");
         boolean exists;
-        try (Cursor c = db.rawQuery("SELECT 1 FROM records WHERE id=?", new String[] {id})) {
+        try (Cursor c = db.rawQuery("SELECT pkg,nkey FROM records WHERE id=?", new String[] {id})) {
           exists = c.moveToFirst();
+          if (exists && (!c.getString(0).equals(o.getString("pkg")) || !c.getString(1).equals(o.getString("nkey"))))
+            throw new IllegalArgumentException("通知識別碼衝突，未匯入任何資料");
         }
         if (!exists) {
           ContentValues v = new ContentValues();
@@ -384,6 +386,14 @@ public final class Store extends SQLiteOpenHelper {
         JSONArray versions = o.getJSONArray("versions");
         for (int j = 0; j < versions.length(); j++) {
           JSONObject x = versions.getJSONObject(j);
+          try (Cursor c=db.rawQuery("SELECT record_id,time,title,body FROM versions WHERE id=?",new String[]{x.getString("id")})) {
+            if (c.moveToFirst()) {
+              if (!id.equals(c.getString(0)) || x.getLong("time")!=c.getLong(1)
+                  || !x.getString("title").equals(c.getString(2)) || !x.getString("body").equals(c.getString(3)))
+                throw new IllegalArgumentException("更新歷程識別碼衝突，未匯入任何資料");
+              continue;
+            }
+          }
           ContentValues v = new ContentValues();
           v.put("id", x.getString("id"));
           v.put("record_id", id);
@@ -391,9 +401,8 @@ public final class Store extends SQLiteOpenHelper {
           v.put("title", x.getString("title"));
           v.put("body", x.getString("body"));
           v.put("hash", EventPolicy.fingerprint(x.getString("title"), x.getString("body")));
-          long result =
-              db.insertWithOnConflict("versions", null, v, SQLiteDatabase.CONFLICT_IGNORE);
-          if (exists && result != -1) mergedVersions++;
+          db.insertOrThrow("versions", null, v);
+          if (exists) mergedVersions++;
         }
       }
       if (restoreSettings) {

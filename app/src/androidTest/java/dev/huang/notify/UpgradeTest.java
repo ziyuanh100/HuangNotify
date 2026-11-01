@@ -24,8 +24,19 @@ public class UpgradeTest extends AndroidTestCase {
   public void testTamperedApkRejectedBeforeParsing() throws Exception {
     File file=new File(getContext().getCacheDir(),"bad-update.apk");
     try { try(FileOutputStream out=new FileOutputStream(file)) { out.write(new byte[]{1,2,3}); }
-      try { UpgradeManager.verify(getContext(),file,"0".repeat(64),"v2.0.0"); fail(); } catch(SecurityException expected) { }
+      try { UpgradeManager.verify(getContext(),file,new String(new char[64]).replace('\0','0'),"v2.0.0"); fail(); } catch(SecurityException expected) { }
     } finally { file.delete(); }
+  }
+  public void testInterruptedInstallAllowsExplicitRetryAndMissingApkFails() throws Exception {
+    android.content.Context c=getContext();
+    try {
+      try(FileOutputStream out=new FileOutputStream(UpgradeManager.apk(c))) { out.write(1); }
+      UpgradeManager.prefs(c).edit().clear().putBoolean("ready",true).putString("stage","installing").commit();
+      UpgradeManager.recoverInterrupted(c);
+      assertEquals("retry",UpgradeManager.prefs(c).getString("stage","")); assertTrue(UpgradeManager.prefs(c).getBoolean("ready",false));
+      UpgradeManager.apk(c).delete(); UpgradeManager.stage(c,"installing","interrupted"); UpgradeManager.recoverInterrupted(c);
+      assertEquals("failed",UpgradeManager.prefs(c).getString("stage","")); assertFalse(UpgradeManager.prefs(c).getBoolean("ready",true));
+    } finally { UpgradeManager.apk(c).delete(); UpgradeManager.prefs(c).edit().clear().commit(); }
   }
   public void testOnlyOfficialHttpsApkUrlsAllowed() {
     assertTrue(UpgradeManager.allowedDownload("https://github.com/ziyuanh100/HuangNotify/releases/download/v1.0.0/HuangNotify-v1.0.0.apk"));
@@ -35,6 +46,6 @@ public class UpgradeTest extends AndroidTestCase {
     JSONObject asset=new JSONObject().put("name","a.apk").put("size",100).put("state","uploaded").put("browser_download_url","https://github.com/ziyuanh100/HuangNotify/releases/download/v2.0.0/a.apk");
     JSONObject release=new JSONObject().put("tag_name","v2.0.0").put("draft",false).put("prerelease",false).put("html_url","https://github.com/ziyuanh100/HuangNotify/releases/tag/v2.0.0").put("assets",new JSONArray().put(asset));
     UpdateChecker.Result result=UpdateChecker.select(new JSONArray().put(release),"1.0.0",true); assertTrue(result.available()); assertFalse(result.installable());
-    asset.put("digest","sha256:"+"a".repeat(64)); assertTrue(UpdateChecker.select(new JSONArray().put(release),"1.0.0",true).installable());
+    asset.put("digest","sha256:"+new String(new char[64]).replace('\0','a')); assertTrue(UpdateChecker.select(new JSONArray().put(release),"1.0.0",true).installable());
   }
 }

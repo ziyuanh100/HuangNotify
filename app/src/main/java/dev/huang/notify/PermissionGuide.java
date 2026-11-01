@@ -15,7 +15,8 @@ final class PermissionGuide {
   PermissionGuide(Activity activity) { this.activity = activity; }
   private SharedPreferences prefs() { return activity.getSharedPreferences("permission_guide", Activity.MODE_PRIVATE); }
   private void step(int value) { prefs().edit().putInt("step", value).apply(); }
-  private boolean access() {
+  private boolean access() { return hasAccess(activity); }
+  static boolean hasAccess(android.content.Context activity) {
     if (Build.VERSION.SDK_INT >= 27) return activity.getSystemService(NotificationManager.class)
         .isNotificationListenerAccessGranted(new ComponentName(activity, CaptureService.class));
     String value = Settings.Secure.getString(activity.getContentResolver(), "enabled_notification_listeners");

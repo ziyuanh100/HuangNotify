@@ -59,6 +59,41 @@ public class StoreTest extends AndroidTestCase {
     assertEquals(1L, store.counts()[0]);
   }
 
+  public void testVersionCollisionRollsBackNewRecordsAndSettings() throws Exception {
+    store.capture("key","sample.app","範例","原本","保留",100);
+    JSONObject backup=store.exportBackup();
+    JSONObject imported=backup.getJSONArray("records").getJSONObject(0);
+    imported.put("id",java.util.UUID.randomUUID().toString());
+    backup.getJSONObject("settings").put("retention","7");
+    try { store.restore(backup,true); fail("must reject version assigned to another record"); } catch(IllegalArgumentException expected) { }
+    assertEquals(1L,store.counts()[0]); assertEquals("保留",store.list("",null,false,false,10).get(0).text);
+    assertEquals("0",store.setting("retention","0"));
+  }
+  public void testExistingRecordAndVersionCannotChangeIdentity() throws Exception {
+    store.capture("key","sample.app","範例","原本","保留",100);
+    JSONObject backup=store.exportBackup(), row=backup.getJSONArray("records").getJSONObject(0);
+    row.put("pkg","foreign.app");
+    try { store.restore(backup,false); fail(); } catch(IllegalArgumentException expected) { }
+    row.put("pkg","sample.app"); row.getJSONArray("versions").getJSONObject(0).put("body","被竄改");
+    try { store.restore(backup,false); fail(); } catch(IllegalArgumentException expected) { }
+    Record r=store.list("",null,false,false,10).get(0);
+    assertEquals("sample.app",r.pkg); assertEquals("保留",store.versions(r.id).getJSONObject(0).getString("body"));
+  }
+  public void testBackupRejectsCoercedAndFractionalNumbers() throws Exception {
+    store.capture("key","sample.app","範例","原本","保留",100);
+    JSONObject backup=store.exportBackup();
+    for(String field:new String[]{"version","created","posted","favorite","reason","time"}) {
+      for(Object invalid:new Object[]{"1",1.5,1.0,Boolean.TRUE}) {
+        JSONObject changed=new JSONObject(backup.toString());
+        JSONObject target=field.equals("version") || field.equals("created")?changed:changed.getJSONArray("records").getJSONObject(0);
+        if(field.equals("time")) target=target.getJSONArray("versions").getJSONObject(0);
+        target.put(field,invalid);
+        try { store.restore(changed,false); fail("accepted invalid "+field+" "+invalid); } catch(IllegalArgumentException expected) { }
+      }
+    }
+    assertEquals(1L,store.counts()[0]);
+  }
+
   public void testExclusionsAndPausePreventCapture() {
     store.putSetting("exclude:sample.app", "1");
     store.capture("key", "sample.app", "範例", "a", "b", 1);

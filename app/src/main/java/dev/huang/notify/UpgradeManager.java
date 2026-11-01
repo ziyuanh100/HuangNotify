@@ -17,6 +17,7 @@ final class UpgradeManager {
   static final long MAX_APK = 100L * 1024 * 1024;
   static final java.util.concurrent.ExecutorService IO = java.util.concurrent.Executors.newSingleThreadExecutor();
   static volatile Intent confirmation;
+  private static final AtomicBoolean RECOVERED = new AtomicBoolean();
   private static final AtomicBoolean INSTALLING = new AtomicBoolean();
   static SharedPreferences prefs(Context c) { return c.getSharedPreferences("upgrade", 0); }
   static boolean automatic(Context c) { return prefs(c).getBoolean("download", false); }
@@ -33,6 +34,7 @@ final class UpgradeManager {
     }
   }
   static void request(Context c, UpdateChecker.Result result, boolean automatic) {
+    if (INSTALLING.get() || "installing".equals(prefs(c).getString("stage",""))) { status(c,"請先完成目前的安裝程序"); return; }
     if (!result.installable()) { status(c, "此版本缺少完整驗證資訊，請到官方版本頁下載"); return; }
     if (automatic && !automatic(c)) return;
     if (prefs(c).getBoolean("ready", false) && result.tag.equals(prefs(c).getString("tag", "")) && apk(c).isFile()) return;
@@ -41,6 +43,7 @@ final class UpgradeManager {
       if (!automatic && existing.getExtras().getBoolean("automatic")) c.getSystemService(JobScheduler.class).cancel(JOB);
       else return;
     }
+    prefs(c).edit().putBoolean("ready",false).putInt("progress",0).apply();
     PersistableBundle data = new PersistableBundle();
     data.putString("tag", result.tag); data.putString("url", result.apk); data.putString("sha", result.sha256); data.putLong("size", result.size); data.putBoolean("automatic", automatic);
     int scheduled = c.getSystemService(JobScheduler.class).schedule(new JobInfo.Builder(JOB, new ComponentName(c, UpgradeJob.class))
@@ -148,7 +151,10 @@ final class UpgradeManager {
           int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
           PendingIntent result = PendingIntent.getBroadcast(c, sessionId, receiver, flags);
           status(c,"已交由 Android 處理更新；如需確認，請點選更新通知");
-          if (silent && (!automatic(c) || !autoInstall(c))) { installer.abandonSession(sessionId); return; }
+          if (silent && (!automatic(c) || !autoInstall(c))) {
+            installer.abandonSession(sessionId); prefs(c).edit().remove("session").apply();
+            stage(c,"retry","自動安裝已關閉，可手動安裝已下載更新"); return;
+          }
           session.commit(result.getIntentSender());
         }
       } catch (Exception e) {
@@ -157,6 +163,27 @@ final class UpgradeManager {
         stage(c,"failed","安裝未完成：請確認更新檔、簽章、安裝權限或重新下載");
       } finally { INSTALLING.set(false); }
     });
+  }
+  /** A lost confirmation Intent cannot be recovered from preferences. Require an explicit retry. */
+  static void recover(Context c) {
+    if (!RECOVERED.compareAndSet(false,true) || INSTALLING.get()) return;
+    recoverInterrupted(c);
+  }
+  static void recoverInterrupted(Context c) {
+    String stage=prefs(c).getString("stage","");
+    if (stage.equals("installing") || (stage.equals("confirm") && confirmation==null)) {
+      PackageInstaller installer=c.getPackageManager().getPackageInstaller();
+      int id=prefs(c).getInt("session",-1);
+      try {
+        PackageInstaller.SessionInfo session=installer.getSessionInfo(id);
+        if (session!=null && !session.isSealed()) { installer.abandonSession(id); prefs(c).edit().remove("session").apply(); }
+      } catch (Exception ignored) { }
+      boolean ready=prefs(c).getBoolean("ready",false) && apk(c).isFile();
+      prefs(c).edit().putBoolean("ready",ready).apply();
+      stage(c,ready?"retry":"failed",ready?"上次安裝程序中斷；若 Android 尚未完成，可點選再次安裝":"更新程序中斷，請重新下載更新");
+    } else if ((stage.equals("queued") || stage.equals("downloading")) && c.getSystemService(JobScheduler.class).getPendingJob(JOB)==null) {
+      prefs(c).edit().putBoolean("ready",false).apply(); stage(c,"failed","下載已中斷，請重新下載更新");
+    }
   }
   static void reconcile(Context c) {
     ReleaseVersion pending=ReleaseVersion.parse(prefs(c).getString("tag","")),current=ReleaseVersion.parse(BuildConfig.VERSION_NAME);

@@ -53,6 +53,16 @@ public class UpdateFlowTest extends ActivityInstrumentationTestCase2<MainActivit
     getInstrumentation().runOnMainSync(()->activity.updateFlow.dialog.getButton(AppDialog.BUTTON_NEGATIVE).performClick());
     assertFalse(UpgradeManager.prefs(activity).getBoolean("show_progress",true));
   }
+  public void testFailedDownloadHasWorkingRetryButton() throws Exception {
+    activity=getActivity(); awaitDialog("現在更新"); AtomicInteger attempts=new AtomicInteger();
+    getInstrumentation().runOnMainSync(()->{
+      activity.updateFlow.download=result->{ attempts.incrementAndGet(); UpgradeManager.stage(activity,"failed","網路中斷"); };
+      activity.updateFlow.dialog.getButton(AppDialog.BUTTON_POSITIVE).performClick();
+    });
+    awaitDialog("重新下載"); assertTrue(activity.updateFlow.dialog.getButton(AppDialog.BUTTON_POSITIVE).isEnabled());
+    getInstrumentation().runOnMainSync(()->activity.updateFlow.dialog.getButton(AppDialog.BUTTON_POSITIVE).performClick());
+    assertEquals(2,attempts.get());
+  }
   public void testDisabledChecksSwitchRemainsOff() throws Exception {
     UpdateChecker.enable(getInstrumentation().getTargetContext(),false); activity=getActivity(); getInstrumentation().waitForIdleSync();
     assertEquals(0,calls.get());

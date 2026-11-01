@@ -13,11 +13,11 @@ public class BackupTest extends AndroidTestCase {
   private static final String PREFIX="HuangNotify_auto_test_";
   private String name(int time) { return PREFIX+String.format(java.util.Locale.ROOT,"%013d",time)+"_00000000-0000-0000-0000-000000000000.hnbk"; }
   static final class Memory implements AutoBackup.Destination {
-    Map<String,byte[]> data=new HashMap<>(); boolean corrupt;
+    Map<String,byte[]> data=new HashMap<>(); boolean corrupt, listingFails;
     public String create(String name) { data.put(name,new byte[0]); return name; }
     public OutputStream write(String id) { return new ByteArrayOutputStream() { public void close() { data.put(id,toByteArray()); } }; }
     public InputStream read(String id) { return new ByteArrayInputStream(corrupt?new byte[]{0}:data.get(id)); }
-    public Map<String,String> files() { Map<String,String> names=new HashMap<>(); for(String id:data.keySet()) names.put(id,id); return names; }
+    public Map<String,String> files() throws IOException { if(listingFails) throw new IOException(); Map<String,String> names=new HashMap<>(); for(String id:data.keySet()) names.put(id,id); return names; }
     public void delete(String id) { data.remove(id); }
   }
   public void testCorruptWriteNeverPrunesPreviousBackups() throws Exception {
@@ -34,6 +34,23 @@ public class BackupTest extends AndroidTestCase {
     Memory d=new Memory(); d.data.put(name(1),new byte[]{1});
     try { AutoBackup.saveVerified(d,name(2),PREFIX,new byte[]{2},1,new AtomicBoolean(true)); fail(); } catch(InterruptedIOException expected) { }
     assertEquals(1,d.data.size());
+  }
+  public void testCleanupListingFailureKeepsVerifiedBackupAndOldFiles() throws Exception {
+    Memory d=new Memory(); d.data.put(name(1),new byte[]{1}); d.listingFails=true;
+    assertFalse(AutoBackup.saveVerified(d,name(2),PREFIX,new byte[]{2},1,new AtomicBoolean()));
+    assertEquals(2,d.data.size()); assertTrue(Arrays.equals(new byte[]{2},d.data.get(name(2))));
+  }
+  public void testDisablingActiveBackupDoesNotPersistFailure() throws Exception {
+    android.content.Context c=getContext(); CountDownLatch release=new CountDownLatch(1), done=new CountDownLatch(1);
+    AtomicBoolean cancelled=new AtomicBoolean();
+    Store.IO.submit(()->{ try { release.await(20,TimeUnit.SECONDS); } catch(InterruptedException e) { Thread.currentThread().interrupt(); } });
+    try {
+      AutoBackup.configure(c,Uri.parse("content://dev.huang.notify.testdocs/tree/root"),"password123".toCharArray(),7);
+      AutoBackup.prefs(c).edit().putString("error","old error").putLong("success",123).commit();
+      AutoBackup.run(c,true,cancelled,message->done.countDown()); AutoBackup.disable(c);
+      assertTrue(cancelled.get()); release.countDown(); assertTrue(done.await(30,TimeUnit.SECONDS));
+      assertEquals("",AutoBackup.prefs(c).getString("error","")); assertEquals(123L,AutoBackup.prefs(c).getLong("success",0));
+    } finally { release.countDown(); AutoBackup.disable(c); AutoBackup.prefs(c).edit().clear().commit(); }
   }
   public void testKeystorePasswordCanUnlockPortableBackup() throws Exception {
     char[] password="繁體中文-test-password".toCharArray();

@@ -41,7 +41,11 @@ jobs:
             app/build/reports/lint-results-debug.*
   device-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [26, 35, 36]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -69,7 +73,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: ${{ matrix.api }}
           arch: x86_64
           profile: pixel_2
           disable-animations: true
@@ -88,16 +92,16 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ui-preview
+          name: ui-preview-api-${{ matrix.api }}
           path: ui-preview/
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: device-test-reports
+          name: device-test-reports-api-${{ matrix.api }}
           path: app/build/reports/androidTests/
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: self-update-cycle
+          name: self-update-cycle-api-${{ matrix.api }}
           path: upgrade-*.txt

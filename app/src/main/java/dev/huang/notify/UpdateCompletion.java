@@ -14,6 +14,7 @@ public final class UpdateCompletion extends BroadcastReceiver {
     UpgradeManager.prefs(c).edit().putString("completed_version",BuildConfig.VERSION_NAME).putBoolean("completion_pending",true)
       .putBoolean("ready",false).putBoolean("show_progress",false).remove("stage").remove("session").remove("tag").remove("sha")
       .putString("status","已更新至 "+BuildConfig.VERSION_NAME+"，可重新開啟新版").apply();
+    UpgradeManager.apk(c).delete(); new java.io.File(c.getFilesDir(),"update.part").delete();
     UpgradeManager.confirmation=null;
     NotificationManager manager=c.getSystemService(NotificationManager.class);
     manager.createNotificationChannel(new NotificationChannel("update_downloads","更新下載與安裝",NotificationManager.IMPORTANCE_DEFAULT));

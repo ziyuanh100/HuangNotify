@@ -19,6 +19,8 @@ final class AutoBackup {
   static final int JOB = 8420;
   private static final java.util.concurrent.ExecutorService IO=java.util.concurrent.Executors.newSingleThreadExecutor();
   private static final AtomicBoolean RUNNING = new AtomicBoolean();
+  private static final Object LOCK = new Object();
+  private static AtomicBoolean active;
   interface Callback { void done(String message); }
   static SharedPreferences prefs(Context c) { return c.getSharedPreferences("auto_backup", 0); }
   static boolean enabled(Context c) { return prefs(c).getBoolean("enabled", false); }
@@ -30,14 +32,27 @@ final class AutoBackup {
   }
   static void configure(Context c, Uri tree, char[] password, int keep) throws Exception {
     String wrapped = DeviceSecret.wrap(password);
-    SharedPreferences p = prefs(c); String owner = p.getString("owner", UUID.randomUUID().toString());
-    if (!tree.toString().equals(p.getString("tree",""))) p.edit().remove("success").apply();
-    if (!p.edit().putString("tree", tree.toString()).putString("secret", wrapped).putString("owner", owner)
-        .putInt("keep", keep).putBoolean("enabled", true).remove("error").commit()) throw new IOException("無法儲存備份設定");
+    if (keep < 1 || keep > 30) throw new IllegalArgumentException("保留份數不正確");
+    synchronized (LOCK) {
+      SharedPreferences p = prefs(c);
+      SharedPreferences.Editor edit = p.edit();
+      if (!tree.toString().equals(p.getString("tree",""))) edit.remove("success");
+      if (active != null) active.set(true);
+      if (!edit.putString("tree", tree.toString()).putString("secret", wrapped)
+          .putString("owner", p.getString("owner", UUID.randomUUID().toString()))
+          .putLong("generation", p.getLong("generation",0)+1).putInt("keep", keep)
+          .putBoolean("enabled", true).remove("error").commit()) throw new IOException("無法儲存備份設定");
+    }
     schedule(c);
   }
   static void disable(Context c) {
-    prefs(c).edit().putBoolean("enabled", false).remove("secret").apply(); schedule(c);
+    synchronized (LOCK) {
+      SharedPreferences p=prefs(c);
+      if (active != null) active.set(true);
+      p.edit().putBoolean("enabled", false).remove("secret").remove("error")
+          .putLong("generation",p.getLong("generation",0)+1).apply();
+    }
+    schedule(c);
   }
   static void schedule(Context c) {
     JobScheduler scheduler = c.getSystemService(JobScheduler.class);
@@ -47,31 +62,45 @@ final class AutoBackup {
   }
   static void run(Context context, boolean force, AtomicBoolean cancelled, Callback callback) {
     Context c = context.getApplicationContext();
-    if (!RUNNING.compareAndSet(false, true)) { callback.done("已有備份作業進行中"); return; }
+    final long generation, success; final String tree, secret, owner; final int count;
+    synchronized (LOCK) {
+      if (!RUNNING.compareAndSet(false, true)) { callback.done("已有備份作業進行中"); return; }
+      SharedPreferences p=prefs(c); active=cancelled;
+      generation=p.getLong("generation",0); success=p.getLong("success",0);
+      tree=p.getString("tree", ""); secret=p.getString("secret", ""); owner=p.getString("owner", ""); count=keep(c);
+    }
     IO.execute(() -> {
       byte[] raw = null, encrypted = null; char[] password = null; String message;
       try {
-        SharedPreferences p = prefs(c);
-        if (!enabled(c)) throw new IOException("自動備份已關閉");
-        long elapsed = System.currentTimeMillis() - p.getLong("success", 0);
-        if (!force && elapsed >= 0 && elapsed < UpdateChecker.DAY) { callback.done("今天已成功備份"); return; }
-        String tree = p.getString("tree", ""), secret = p.getString("secret", "");
-        password = DeviceSecret.unwrap(secret);
-        raw = Store.IO.submit(() -> Store.get(c).exportBackup().toString().getBytes(StandardCharsets.UTF_8)).get();
-        encrypted = BackupCrypto.encrypt(raw, password);
         if (cancelled.get() || !enabled(c)) throw new InterruptedIOException();
-        String prefix = "HuangNotify_auto_" + p.getString("owner", "") + "_";
-        String name = prefix + String.format(Locale.ROOT, "%013d", System.currentTimeMillis()) + "_" + UUID.randomUUID() + ".hnbk";
-        Destination destination = new Documents(c, Uri.parse(tree));
-        boolean clean = saveVerified(destination, name, prefix, encrypted, keep(c), cancelled);
-        p.edit().putLong("success", System.currentTimeMillis()).putString("error", clean ? "" : "新備份成功；部分舊檔無法清理，稍後可重試").apply();
-        message = clean ? "加密備份已完成並驗證" : "備份成功，舊檔清理未完成";
+        long elapsed = System.currentTimeMillis() - success;
+        if (!force && elapsed >= 0 && elapsed < UpdateChecker.DAY) message="今天已成功備份";
+        else {
+          password = DeviceSecret.unwrap(secret);
+          raw = Store.IO.submit(() -> Store.get(c).exportBackup().toString().getBytes(StandardCharsets.UTF_8)).get();
+          encrypted = BackupCrypto.encrypt(raw, password);
+          if (cancelled.get()) throw new InterruptedIOException();
+          String prefix = "HuangNotify_auto_" + owner + "_";
+          String name = prefix + String.format(Locale.ROOT, "%013d", System.currentTimeMillis()) + "_" + UUID.randomUUID() + ".hnbk";
+          boolean clean = saveVerified(new Documents(c, Uri.parse(tree)), name, prefix, encrypted, count, cancelled);
+          synchronized (LOCK) {
+            if (cancelled.get() || generation!=prefs(c).getLong("generation",0)) throw new InterruptedIOException();
+            prefs(c).edit().putLong("success", System.currentTimeMillis()).putString("error", clean ? "" : "新備份成功；部分舊檔無法清理，稍後可重試").apply();
+          }
+          message = clean ? "加密備份已完成並驗證" : "備份成功，舊檔清理未完成";
+        }
       } catch (Exception e) {
-        message = "備份未完成：請檢查資料夾權限、空間或重新設定密碼；既有備份保留";
-        prefs(c).edit().putString("error", message).apply();
+        synchronized (LOCK) {
+          if (cancelled.get() || generation!=prefs(c).getLong("generation",0) || !enabled(c)) message="備份已停止；既有備份保留";
+          else {
+            message = "備份未完成：請檢查資料夾權限、空間或重新設定密碼；既有備份保留";
+            prefs(c).edit().putString("error", message).apply();
+          }
+        }
       } finally {
         if (raw != null) Arrays.fill(raw, (byte)0); if (encrypted != null) Arrays.fill(encrypted, (byte)0);
-        if (password != null) Arrays.fill(password, '\0'); RUNNING.set(false);
+        if (password != null) Arrays.fill(password, '\0');
+        synchronized (LOCK) { active=null; RUNNING.set(false); }
       }
       callback.done(message);
     });
@@ -85,6 +114,7 @@ final class AutoBackup {
   }
   static boolean saveVerified(Destination destination, String name, String prefix, byte[] bytes, int keep, AtomicBoolean cancelled) throws Exception {
     if (keep < 1 || keep > 30) throw new IllegalArgumentException("保留份數不正確");
+    if (cancelled.get()) throw new InterruptedIOException();
     String id = destination.create(name);
     try {
       try (OutputStream out = destination.write(id)) { if (out == null) throw new IOException();
@@ -99,7 +129,9 @@ final class AutoBackup {
     } catch (Exception e) { try { destination.delete(id); } catch (Exception ignored) { } throw e; }
     // Only this installation's generated filenames qualify. Never delete arbitrary user files.
     List<Map.Entry<String,String>> owned = new ArrayList<>();
-    for (Map.Entry<String,String> file : destination.files().entrySet())
+    Map<String,String> files;
+    try { files=destination.files(); } catch (Exception e) { return false; }
+    for (Map.Entry<String,String> file : files.entrySet())
       if (file.getValue().matches(java.util.regex.Pattern.quote(prefix) + "[0-9]{13}_[0-9a-f-]{36}\\.hnbk")) owned.add(file);
     owned.sort((a,b) -> b.getValue().compareTo(a.getValue()));
     boolean clean = true;
