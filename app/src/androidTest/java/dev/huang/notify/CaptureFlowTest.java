@@ -50,21 +50,21 @@ public class CaptureFlowTest extends InstrumentationTestCase {
     byte[] original=Store.IO.submit(()->Store.get(c).image(hash)).get(); assertNotNull(original);
     assertEquals(1,Store.IO.submit(()->Store.get(c).list("",PROBE,false,false,20).size()).get().intValue());
     probe(true);
-    Record removed=awaitRecord(false); assertEquals(saved.id,removed.id); assertEquals(saved.text,removed.text); assertEquals(1,removed.imageCount); assertTrue(java.util.Arrays.equals(original,Store.IO.submit(()->Store.get(c).image(hash)).get()));
+    Record removed=awaitRecord(false,saved.id); assertEquals(saved.id,removed.id); assertEquals(saved.text,removed.text); assertEquals(1,removed.imageCount); assertTrue(java.util.Arrays.equals(original,Store.IO.submit(()->Store.get(c).image(hash)).get()));
     org.json.JSONObject backup=Store.IO.submit(()->Store.get(c).exportBackup()).get(); BackupFormat.validate(backup); assertEquals(2,backup.getInt("version"));
   }
   public void testMessagingImageRespectsAvailableUriGrants() throws Exception {
     kind="message-image"; probe(false); Record saved=awaitRecord(true);
     if(Build.VERSION.SDK_INT<28) {
       // Android 8 has no NLS URI auto-grant: first prove denial, then a source-owned explicit grant.
-      assertEquals("unavailable",saved.imageStatus); assertTrue(saved.text.contains("圖片說明")); probe(true); awaitRecord(false);
+      assertEquals("unavailable",saved.imageStatus); assertTrue(saved.text.contains("圖片說明")); probe(true); awaitRecord(false,saved.id);
       kind="message-image-granted"; probe(false); saved=awaitRecord(true);
     }
     assertEquals("saved",saved.imageStatus); assertEquals(1,saved.imageCount);
     Record copied=saved;
     String hash=Store.IO.submit(()->Store.get(c).recordImages(copied.id).getString(0)).get();
     byte[] bytes=Store.IO.submit(()->Store.get(c).image(hash)).get(); assertNotNull(bytes);
-    probe(true); Record removed=awaitRecord(false); assertEquals(saved.id,removed.id);
+    probe(true); Record removed=awaitRecord(false,saved.id); assertEquals(saved.id,removed.id);
     assertTrue(Arrays.equals(bytes,Store.IO.submit(()->Store.get(c).image(hash)).get()));
   }
   public void testUnreadableImageKeepsTheNotificationText() throws Exception {
@@ -75,11 +75,12 @@ public class CaptureFlowTest extends InstrumentationTestCase {
     Store.IO.submit(()->Store.get(c).putSetting("save_images","0")).get();
     probe(false); Record saved=awaitRecord(true); assertEquals("disabled",saved.imageStatus); assertEquals(0,saved.imageCount);
   }
-  private Record awaitRecord(boolean active) throws Exception {
+  private Record awaitRecord(boolean active) throws Exception { return awaitRecord(active,null); }
+  private Record awaitRecord(boolean active,String id) throws Exception {
     long deadline=SystemClock.elapsedRealtime()+12000;
     while(SystemClock.elapsedRealtime()<deadline) {
       List<Record> records=Store.IO.submit(()->Store.get(c).list("",PROBE,false,false,20)).get(5,TimeUnit.SECONDS);
-      for(Record r:records) if(r.active==active) return r;
+      for(Record r:records) if(r.active==active && (id==null || id.equals(r.id))) return r;
       SystemClock.sleep(100);
     } throw new AssertionError("Screenshot notification not recorded with active="+active+"; "+Store.error);
   }
