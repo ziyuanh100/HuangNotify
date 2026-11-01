@@ -22,8 +22,8 @@ public class CaptureFlowTest extends InstrumentationTestCase {
     if(Build.VERSION.SDK_INT>=28) shell("cmd notification allow_listener "+COMPONENT);
     else {
       listenerSetting=shell("settings get secure enabled_notification_listeners").trim();
-      String previous="null".equals(listenerSetting)?"":listenerSetting;
-      shell("settings put secure enabled_notification_listeners "+(previous.isEmpty()?COMPONENT:previous+":"+COMPONENT));
+      String oldListeners="null".equals(listenerSetting)?"":listenerSetting;
+      shell("settings put secure enabled_notification_listeners "+(oldListeners.isEmpty()?COMPONENT:oldListeners+":"+COMPONENT));
     }
     long deadline=SystemClock.elapsedRealtime()+15000;
     while(!CaptureService.connected && SystemClock.elapsedRealtime()<deadline) SystemClock.sleep(100);

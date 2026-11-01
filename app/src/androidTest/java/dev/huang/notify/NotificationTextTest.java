@@ -10,7 +10,7 @@ public class NotificationTextTest extends AndroidTestCase {
   private Notification notification() { return new Notification.Builder(getContext(),"fixture").setSmallIcon(android.R.drawable.ic_dialog_info).build(); }
   private StatusBarNotification item(String pkg,int id,String group,boolean summary) {
     Notification.Builder b=new Notification.Builder(getContext(),"fixture").setSmallIcon(android.R.drawable.ic_dialog_info).setGroup(group).setGroupSummary(summary);
-    return new StatusBarNotification(pkg,pkg,id,null,10000,0,b.build(),android.os.Process.myUserHandle(),System.currentTimeMillis());
+    return new StatusBarNotification(pkg,pkg,id,null,10000,0,0,b.build(),android.os.Process.myUserHandle(),System.currentTimeMillis());
   }
   public void testStandaloneScreenshotSummaryIsEligibleAndImageIsDescribed() {
     Notification n=notification(); n.flags|=Notification.FLAG_GROUP_SUMMARY;
