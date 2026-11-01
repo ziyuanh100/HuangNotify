@@ -2,8 +2,6 @@ package dev.huang.notify;
 
 import android.app.Notification;
 import android.content.ComponentName;
-import android.os.Bundle;
-import android.os.Parcelable;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 import java.util.HashSet;
@@ -29,7 +27,10 @@ public final class CaptureService extends NotificationListenerService {
                 Store.error = "無法整理通知狀態，請檢查儲存空間";
               }
             });
-        for (StatusBarNotification s : active) onNotificationPosted(s);
+        for (StatusBarNotification s : active) {
+          try { captureNotification(s,active); }
+          catch(RuntimeException e) { Store.error="有一則通知格式無法讀取；其他通知會繼續記錄"; }
+        }
       }
     } catch (RuntimeException e) {
       Store.error = "無法讀取目前通知，請重新連線";
@@ -51,45 +52,23 @@ public final class CaptureService extends NotificationListenerService {
   @Override
   public void onNotificationPosted(StatusBarNotification sbn) {
     try {
-      captureNotification(sbn);
+      captureNotification(sbn,null);
     } catch (RuntimeException e) {
       Store.error = "有一則通知格式無法讀取；其他通知會繼續記錄";
     }
   }
 
-  private void captureNotification(StatusBarNotification sbn) {
+  private void captureNotification(StatusBarNotification sbn,StatusBarNotification[] snapshot) {
     if (sbn == null || sbn.getPackageName().equals(getPackageName())) return;
     Notification n = sbn.getNotification();
-    if ((n.flags & Notification.FLAG_GROUP_SUMMARY) != 0) return;
-    Bundle extras = n.extras;
-    if (extras == null) return;
-    String title = string(extras.getCharSequence(Notification.EXTRA_TITLE));
-    String text = string(extras.getCharSequence(Notification.EXTRA_BIG_TEXT));
-    if (text.isEmpty()) text = string(extras.getCharSequence(Notification.EXTRA_TEXT));
-    CharSequence[] lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
-    if (lines != null && lines.length > 0) {
-      StringBuilder b = new StringBuilder();
-      for (CharSequence line : lines) {
-        if (b.length() > 0) b.append('\n');
-        b.append(string(line));
-      }
-      text = b.toString();
+    if(n==null) return;
+    if((n.flags & Notification.FLAG_GROUP_SUMMARY)!=0) {
+      if(snapshot==null && connected) try { snapshot=getActiveNotifications(); } catch(RuntimeException ignored) { }
+      // A summary can be the only notification (e.g. a screenshot). Keep it in that case.
+      if(NotificationText.hasGroupChildren(sbn,snapshot)) return;
     }
-    Parcelable[] messages = extras.getParcelableArray(Notification.EXTRA_MESSAGES);
-    if (messages != null && messages.length > 0) {
-      StringBuilder b = new StringBuilder();
-      for (Parcelable message : messages)
-        if (message instanceof Bundle) {
-          Bundle m = (Bundle) message;
-          String sender = string(m.getCharSequence("sender"));
-          String body = string(m.getCharSequence("text"));
-          if (b.length() > 0) b.append('\n');
-          if (!sender.isEmpty()) b.append(sender).append("：");
-          b.append(body);
-        }
-      if (b.length() > 0) text = b.toString();
-    }
-    final String savedTitle = trim(title), savedText = trim(text);
+    NotificationText content=NotificationText.read(n);
+    final String savedTitle=content.title, savedText=content.body;
     final String key = sbn.getKey(), pkg = sbn.getPackageName();
     final long posted = sbn.getPostTime();
     Store.IO.execute(
@@ -129,11 +108,4 @@ public final class CaptureService extends NotificationListenerService {
           });
   }
 
-  private static String string(CharSequence value) {
-    return value == null ? "" : value.toString();
-  }
-
-  private static String trim(String value) {
-    return value.length() > 100000 ? value.substring(0, 100000) : value;
-  }
 }
