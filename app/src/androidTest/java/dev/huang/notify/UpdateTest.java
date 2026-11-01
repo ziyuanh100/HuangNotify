@@ -14,6 +14,19 @@ public class UpdateTest extends AndroidTestCase {
         .put("browser_download_url", "https://github.com/ziyuanh100/HuangNotify/releases/download/" + tag + "/HuangNotify.apk"));
     return r.put("assets", assets);
   }
+  public void testStableChannelIsDefaultAndExplicitPreviewChoiceIsPreserved() throws Exception {
+    android.content.Context c=getContext(); android.content.SharedPreferences p=UpdateChecker.prefs(c);
+    boolean present=p.contains("previews"), previous=UpdateChecker.previews(c);
+    try {
+      p.edit().remove("previews").commit(); assertFalse(UpdateChecker.previews(c));
+      JSONArray feed=new JSONArray().put(release("v1.1.0-rc.1",true,true)).put(release("v1.0.0",false,true));
+      assertEquals("v1.0.0",UpdateChecker.select(feed,"1.0.0-rc.2",UpdateChecker.previews(c)).tag);
+      UpdateChecker.setPreviews(c,true); assertTrue(UpdateChecker.previews(c));
+      assertEquals("v1.1.0-rc.1",UpdateChecker.select(feed,"1.0.0",UpdateChecker.previews(c)).tag);
+      UpdateChecker.setPreviews(c,false); assertFalse(UpdateChecker.previews(c));
+      assertFalse(UpdateChecker.select(feed,"1.0.0",UpdateChecker.previews(c)).available());
+    } finally { if(present) p.edit().putBoolean("previews",previous).commit(); else p.edit().remove("previews").commit(); }
+  }
   public void testChecksDefaultOnAndExplicitOffIsPreserved() {
     android.content.SharedPreferences p=UpdateChecker.prefs(getContext()); boolean present=p.contains("enabled"), old=UpdateChecker.enabled(getContext());
     try {

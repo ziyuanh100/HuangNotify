@@ -43,7 +43,7 @@ public final class UpdateChecker {
   private UpdateChecker() {}
   static SharedPreferences prefs(Context c) { return c.getSharedPreferences("updates", Context.MODE_PRIVATE); }
   public static boolean enabled(Context c) { return prefs(c).getBoolean("enabled", true); }
-  public static boolean previews(Context c) { return prefs(c).getBoolean("previews", true); }
+  public static boolean previews(Context c) { return prefs(c).getBoolean("previews", false); }
   public static void enable(Context c, boolean value) {
     SharedPreferences p=prefs(c);
     p.edit().putBoolean("enabled", value).putInt("generation",p.getInt("generation",0)+1).apply();
