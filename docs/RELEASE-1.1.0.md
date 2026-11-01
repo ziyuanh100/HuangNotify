@@ -11,3 +11,13 @@
 維持免費、無廣告、無帳號、MIT 開源；公開 APK 沿用固定簽章。驗證結果將附在發布說明與 TESTING.md。
 
 Android 8 的私有圖片 URI 不會自動授權給通知監聽器；只有來源已提供可讀權限時才能複製，否則仍保留文字並顯示圖片未保存。BigPicture 直接附帶的圖片不需要這項 URI 授權。
+
+## 驗證與建置來源
+
+公開 APK 來源：`b3094c147f97b1ef01fec09ad63a25cbda3a3f7f`；[CI 41278944755](https://github.com/ziyuanh100/HuangNotify/actions/runs/41278944755)。
+
+JVM 10 項，Android 8／15／16 各 76 項裝置測試通過，共 238 項。三個 API 的 1.0.1 → 1.1.0 真實 APK 升級、SQLite 升級、資料保留與升級後圖片寫入均通過。另驗加密 v2 圖片還原、v1 相容、損壞／衝突回滾、圖片清理、實際縮圖、另存及深色 180% 字型；詳見 [測試紀錄](TESTING.md)。Lint 0 errors、8 warnings。
+
+公開 APK 沿用固定 release 簽章，APK v2／v3 驗證通過；CI 的安裝流程使用同 runner 的 debug 簽章，不能替代各品牌與 Play Protect 的實機驗收。
+
+APK SHA-256：`e825af2715a4059c9a7d085495f5621ea1af7a999a94c76556f7376a050d899d`。

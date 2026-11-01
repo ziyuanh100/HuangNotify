@@ -28,13 +28,13 @@ Android 整合測試：重複更新不增筆數、版本保存、移除保留內
 13. 解除通知權限，狀態應立即指出未授權；授權後可重新連線。
 14. 用開發工具確認更新檢查不會傳送通知資料；備份密碼、通知正文不寫入 logcat。
 
-## 第一版未提供
+## 尚未提供
 
-圖片／附件保存、App 指紋鎖、資料庫額外加密、背景運作零漏記保證。測試 APK 與公開原始碼不代表完成所有品牌與版本相容性驗證。
+一般附件／影片保存、App 指紋鎖、資料庫額外加密、背景運作零漏記保證。測試 APK 與公開原始碼不代表完成所有品牌與版本相容性驗證。
 
 ## 通知端到端測試工具
 
-CI 與上述指令只驗證 `app` 模組。`probe` 刻意以 API 28 為 target，用於舊版模擬器的手動通知測試，不適用上架 target SDK 檢查。
+CI 會建置 `app` 與獨立 `probe` APK，並安裝 probe 驗證真實通知。單獨執行 `:app:connectedDebugAndroidTest` 前也須先安裝 `probe`。`probe` 刻意以 API 28 為 target，用於舊版模擬器的手動通知測試，不適用上架 target SDK 檢查。
 
 專案另含 `probe` 模組（獨立測試 APK，**不包含在 HuangNotify 安裝檔**）。可在模擬器使用：
 
@@ -138,3 +138,16 @@ APK 來源：`64347225385d9ec674486b7601a9d93c32c03161`；[CI 41275259738](https
 - 以 1.0.0 作為真實 APK 升級 fixture，驗證系統安裝確認、資料保留、完成提示與重新開啟；CI 使用 debug 簽章，公開 APK 另驗固定 release 簽章。
 - Android 16 首次升級被 System UI ANR 遮擋；保存畫面及 hierarchy，使用新 runner 重跑後通過，未放寬 HuangNotify 的通過條件。
 - 未完成 Samsung A55 實際截圖格式與長時間背景實機驗證；文字收錄通過不代表保存圖片。
+
+
+## 1.1.0 通知圖片與備份 v2
+
+建置來源：`b3094c147f97b1ef01fec09ad63a25cbda3a3f7f`；[CI 41278944755](https://github.com/ziyuanh100/HuangNotify/actions/runs/41278944755)。
+
+- JVM 10 項，Android 8／15／16 各 76 項裝置測試通過，共 238 項；Debug／Release 建置與 Lint 通過（0 errors、8 warnings）。
+- 真正從獨立 probe APK 發布 BigPicture、MessagingStyle content URI 圖片；驗證寫入、取消後圖片仍可讀、拒絕／未授權不丟文字、圖片開關停用。Android 8 沒有私有 URI 自動授權，分別驗證無授權的文字備援與來源明確授權後複製，沒有放寬正式 App 的讀取權限。
+- PNG 大小／尺寸限制、圖片去重、換圖歷程、共享圖片刪除與收藏保護、暫停／排除來源不寫入圖片、加密 v2 完整還原與 v1 文字相容、圖片校驗／引用／狀態錯誤拒絕，以及通知與圖片衝突全交易回滾。
+- 驗證詳情縮圖實際有 Bitmap、查看／放大／重設、透過 DocumentsProvider 另存後逐位元組比對、圖片開關不刪既有圖片。切換模擬器系統深色及 180% 字型後檢查真實配置與控制項可見性，保存截圖。
+- 三個 API 均由 1.0.1 真實 APK 經系統確認升級，驗證 SQLite v1 → v2、既有文字／歷程／收藏／備註／暫停／保存期限保留、升級後新圖片寫入與 v2 備份有效、完成提示與重新開啟。CI 使用 debug 簽章；公開 APK 另驗固定 release 憑證與 APK v2／v3 簽章。
+- APK SHA-256：`e825af2715a4059c9a7d085495f5621ea1af7a999a94c76556f7376a050d899d`；已核對 GitHub asset digest，公開下載檔另行驗證。
+- Samsung A55 的先前通知漏記案例尚未取得實際格式，沒有將新增圖片功能宣稱為該案例的修復。
