@@ -27,6 +27,11 @@ final class ImageGallery {
       if(thumbnails) {
         ImageView preview=new ImageView(activity); preview.setBackground(u.shape(u.pale,12)); preview.setClipToOutline(true);
         preview.setScaleType(ImageView.ScaleType.FIT_CENTER); preview.setContentDescription("通知圖片 "+index+"，點擊查看"); preview.setFocusable(true);
+        java.util.concurrent.atomic.AtomicBoolean dismissed=new java.util.concurrent.atomic.AtomicBoolean();
+        preview.addOnAttachStateChangeListener(new android.view.View.OnAttachStateChangeListener(){
+          public void onViewAttachedToWindow(android.view.View v) { }
+          public void onViewDetachedFromWindow(android.view.View v) { dismissed.set(true); }
+        });
         card.addView(preview,new LinearLayout.LayoutParams(u.d(160),u.d(140))); preview.setOnClickListener(v->open.run());
         Store.IO.execute(()->{
           Bitmap image=null;
@@ -37,7 +42,7 @@ final class ImageGallery {
               image=BitmapFactory.decodeByteArray(bytes,0,bytes.length,options); }
           } catch(Exception | OutOfMemoryError ignored) { }
           Bitmap result=image;
-          activity.runOnUiThread(()->{ if(activity.isDestroyed() || !preview.isAttachedToWindow()) { if(result!=null)result.recycle(); return; }
+          activity.runOnUiThread(()->{ if(activity.isDestroyed() || dismissed.get()) { if(result!=null)result.recycle(); return; }
             if(result!=null)preview.setImageBitmap(result); else preview.setContentDescription("圖片已刪除或無法讀取"); });
         });
       }
