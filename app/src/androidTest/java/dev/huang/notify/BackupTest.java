@@ -10,6 +10,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @SuppressWarnings("deprecation")
 public class BackupTest extends AndroidTestCase {
+  @Override protected void setUp() throws Exception {
+    super.setUp(); AutoBackup.disable(getContext()); AutoBackup.IO.submit(()->{}).get(30,TimeUnit.SECONDS);
+  }
+  @Override protected void tearDown() throws Exception {
+    AutoBackup.disable(getContext()); AutoBackup.IO.submit(()->{}).get(30,TimeUnit.SECONDS); super.tearDown();
+  }
   private static final String PREFIX="HuangNotify_auto_test_";
   private String name(int time) { return PREFIX+String.format(java.util.Locale.ROOT,"%013d",time)+"_00000000-0000-0000-0000-000000000000.hnbk"; }
   static final class Memory implements AutoBackup.Destination {
@@ -45,7 +51,9 @@ public class BackupTest extends AndroidTestCase {
     AtomicBoolean cancelled=new AtomicBoolean();
     Store.IO.submit(()->{ try { release.await(20,TimeUnit.SECONDS); } catch(InterruptedException e) { Thread.currentThread().interrupt(); } });
     try {
-      AutoBackup.configure(c,Uri.parse("content://dev.huang.notify.testdocs/tree/root"),"password123".toCharArray(),7);
+      // Enable without scheduling a system job, so this test owns the sole active operation.
+      AutoBackup.prefs(c).edit().putBoolean("enabled",true).putString("tree","content://dev.huang.notify.testdocs/tree/root")
+          .putString("secret",DeviceSecret.wrap("password123".toCharArray())).commit();
       AutoBackup.prefs(c).edit().putString("error","old error").putLong("success",123).commit();
       AutoBackup.run(c,true,cancelled,message->done.countDown()); AutoBackup.disable(c);
       assertTrue(cancelled.get()); release.countDown(); assertTrue(done.await(30,TimeUnit.SECONDS));
@@ -72,7 +80,9 @@ public class BackupTest extends AndroidTestCase {
   public void testActualDocumentsBackupCanDecryptAndValidate() throws Exception {
     android.content.Context c=getContext(); Uri tree=Uri.parse("content://dev.huang.notify.testdocs/tree/root");
     try {
-      AutoBackup.configure(c,tree,"password123".toCharArray(),3);
+      AutoBackup.prefs(c).edit().putBoolean("enabled",true).putString("tree",tree.toString())
+          .putString("owner",UUID.randomUUID().toString()).putInt("keep",3)
+          .putString("secret",DeviceSecret.wrap("password123".toCharArray())).commit();
       CountDownLatch latch=new CountDownLatch(1);
       AutoBackup.run(c,true,new AtomicBoolean(),message->latch.countDown()); assertTrue(latch.await(30,TimeUnit.SECONDS));
       assertTrue(AutoBackup.prefs(c).getLong("success",0)>0); assertEquals("",AutoBackup.prefs(c).getString("error",""));

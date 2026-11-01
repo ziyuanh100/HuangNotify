@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Recurring portable encrypted backups. Old files are pruned only after read-back verification. */
 final class AutoBackup {
   static final int JOB = 8420;
-  private static final java.util.concurrent.ExecutorService IO=java.util.concurrent.Executors.newSingleThreadExecutor();
+  static final java.util.concurrent.ExecutorService IO=java.util.concurrent.Executors.newSingleThreadExecutor();
   private static final AtomicBoolean RUNNING = new AtomicBoolean();
   private static final Object LOCK = new Object();
   private static AtomicBoolean active;
