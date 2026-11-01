@@ -41,6 +41,8 @@ public final class MainActivity extends Activity {
   private boolean recordingLoaded, recordingSaving;
   PermissionGuide permissionGuide;
   UpdateFlow updateFlow;
+  SourcePicker sourcePicker;
+  private boolean loadingSources;
   private LinearLayout root, content, nav, statusBox;
   private TextView statusTitle,
       statusBody,
@@ -825,7 +827,7 @@ public final class MainActivity extends Activity {
     TextView state=u.text(recordingState(),12,u.muted,false); recordStates.add(state); recordingText.addView(state);
     recording.addView(recordingText,new LinearLayout.LayoutParams(0,-2,1)); recording.addView(recordSwitch());
     inner.addView(recording); u.gap(inner,8);
-    settingRow(inner, "選擇記錄來源", "排除不想保存的 App", "settings", this::manageApps);
+    settingRow(inner, "選擇記錄來源", "全部已安裝 App · 搜尋、分類與排除", "settings", this::manageApps);
     settingRow(
         inner,
         "保存期限",
@@ -1065,45 +1067,18 @@ public final class MainActivity extends Activity {
   }
 
   private void manageApps() {
-    Store.IO.execute(
-        () -> {
-          try {
-            List<String[]> sources = Store.get(this).apps();
-            boolean[] checked = new boolean[sources.size()];
-            String[] names = new String[sources.size()];
-            for (int i = 0; i < sources.size(); i++) {
-              String[] a = sources.get(i);
-              names[i] = a[1] + "（" + a[2] + " 則）";
-              checked[i] = !Store.get(this).excluded(a[0]);
-            }
-            runOnUiThread(
-                () -> {
-                  if (names.length == 0) {
-                    toast("收到通知後，來源 App 會出現在這裡");
-                    return;
-                  }
-                  new AppDialog.Builder(this)
-                      .setTitle("要記錄哪些 App？")
-                      .setMultiChoiceItems(names, checked, (d, i, value) -> checked[i] = value)
-                      .setNegativeButton("取消", null)
-                      .setPositiveButton(
-                          "儲存",
-                          (d, w) ->
-                              mutate(
-                                  () -> {
-                                    for (int i = 0; i < sources.size(); i++)
-                                      Store.get(this)
-                                          .putSetting(
-                                              "exclude:" + sources.get(i)[0],
-                                              checked[i] ? "0" : "1");
-                                  },
-                                  "記錄來源已更新"))
-                      .show();
-                });
-          } catch (Exception e) {
-            showError("無法讀取 App 清單");
-          }
+    if (loadingSources || (sourcePicker!=null && sourcePicker.dialog.isShowing())) return;
+    loadingSources=true;
+    Store.IO.execute(()->{
+      try {
+        List<AppSources.Entry> entries=AppSources.load(this,Store.get(this));
+        runOnUiThread(()->{
+          loadingSources=false; if(isFinishing() || isDestroyed()) return;
+          sourcePicker=new SourcePicker(this,entries,changes->mutate(()->Store.get(this).setSourceChoices(changes),"記錄來源已更新"));
+          sourcePicker.show();
         });
+      } catch(Exception e) { runOnUiThread(()->{ loadingSources=false; showError("無法讀取已安裝 App，請稍後重試"); }); }
+    });
   }
 
   private String databaseSize() {

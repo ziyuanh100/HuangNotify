@@ -58,7 +58,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Prepare self-update fixture APKs
         run: |
-          ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+          ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :probe:assembleDebug
           cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/next.apk"
           cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk "$RUNNER_TEMP/upgrade-tests.apk"
           git fetch --depth=1 origin tag v1.0.0-alpha.1
@@ -78,6 +78,7 @@ jobs:
           profile: pixel_2
           disable-animations: true
           script: |
+            adb install probe/build/outputs/apk/debug/probe-debug.apk
             ./gradlew :app:connectedDebugAndroidTest
             adb pull /data/local/tmp/huangnotify-ui-preview ui-preview
             adb uninstall dev.huang.notify || true

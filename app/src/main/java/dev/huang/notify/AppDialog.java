@@ -58,7 +58,7 @@ public final class AppDialog extends Dialog {
       TextView message = u.text(spec.message, 15, u.muted, false); message.setLineSpacing(u.d(4), 1);
       card.addView(message); u.gap(card, 16);
     }
-    if (spec.view != null) card.addView(spec.view, new LinearLayout.LayoutParams(-1, -2));
+    if (spec.view != null) card.addView(spec.view, new LinearLayout.LayoutParams(-1, spec.expanded?0:-2, spec.expanded?1:0));
     if (spec.items != null) {
       List<Toggle> choices = new ArrayList<>();
       for (int i = 0; i < spec.items.length; i++) {
@@ -80,9 +80,11 @@ public final class AppDialog extends Dialog {
     }
     if (spec.positive == null && spec.negative == null && spec.neutral == null) spec.negative = "關閉";
     u.gap(card, 14);
-    action(card, BUTTON_POSITIVE, spec.positive, spec.positiveListener, true);
-    action(card, BUTTON_NEUTRAL, spec.neutral, spec.neutralListener, false);
-    action(card, BUTTON_NEGATIVE, spec.negative, spec.negativeListener, false);
+    LinearLayout actions=spec.expanded?u.row():card;
+    if(spec.expanded) card.addView(actions,new LinearLayout.LayoutParams(-1,-2));
+    action(actions, BUTTON_POSITIVE, spec.positive, spec.positiveListener, true);
+    action(actions, BUTTON_NEUTRAL, spec.neutral, spec.neutralListener, false);
+    action(actions, BUTTON_NEGATIVE, spec.negative, spec.negativeListener, false);
     ScrollView scroll = new ScrollView(getContext()) {
       @Override protected void onMeasure(int width, int height) {
         int cap = (int) (getResources().getDisplayMetrics().heightPixels * .88);
@@ -91,7 +93,8 @@ public final class AppDialog extends Dialog {
       }
     };
     scroll.setFillViewport(false); scroll.setClipToOutline(true); scroll.setBackground(u.shape(u.surface, 28));
-    scroll.addView(card); setContentView(scroll);
+    if (spec.expanded) setContentView(card);
+    else { scroll.addView(card); setContentView(scroll); }
     setCanceledOnTouchOutside(true);
     Window window = getWindow();
     if (window != null) {
@@ -108,7 +111,7 @@ public final class AppDialog extends Dialog {
     Window window = getWindow();
     if (window != null) {
       int width = Math.min(u.d(560), getContext().getResources().getDisplayMetrics().widthPixels - u.d(24));
-      window.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT);
+      window.setLayout(width, spec.expanded?(int)(getContext().getResources().getDisplayMetrics().heightPixels*.88):ViewGroup.LayoutParams.WRAP_CONTENT);
       WindowManager.LayoutParams p = window.getAttributes(); p.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL; p.y = u.d(12); window.setAttributes(p);
     }
   }
@@ -120,13 +123,16 @@ public final class AppDialog extends Dialog {
       button.setTextColor(u.dark ? 0xff35100e : Color.WHITE);
     }
     button.setOnClickListener(v -> { dismiss(); if (listener != null) listener.onClick(this, which); });
-    body.addView(button, new LinearLayout.LayoutParams(-1, -2)); u.gap(body, 8); buttons.put(which, button);
+    LinearLayout.LayoutParams params=spec.expanded?new LinearLayout.LayoutParams(0,-2,1):new LinearLayout.LayoutParams(-1,-2);
+    if(spec.expanded) params.setMargins(u.d(2),0,u.d(2),0);
+    body.addView(button,params); if(!spec.expanded) u.gap(body,8); buttons.put(which,button);
   }
   public TextView getButton(int which) { return buttons.get(which); }
 
   public static final class Builder {
     final Context context;
     String title = "", message, positive, negative, neutral;
+    boolean expanded;
     View view; String[] items; int selected; boolean[] multi;
     DialogInterface.OnClickListener positiveListener, negativeListener, neutralListener, itemListener;
     DialogInterface.OnMultiChoiceClickListener multiListener;
@@ -134,6 +140,7 @@ public final class AppDialog extends Dialog {
     public Builder setTitle(String value) { title = value; return this; }
     public Builder setMessage(String value) { message = value; return this; }
     public Builder setView(View value) { view = value; return this; }
+    public Builder setExpandedView(View value) { view=value; expanded=true; return this; }
     public Builder setPositiveButton(String label, DialogInterface.OnClickListener action) { positive = label; positiveListener = action; return this; }
     public Builder setNegativeButton(String label, DialogInterface.OnClickListener action) { negative = label; negativeListener = action; return this; }
     public Builder setNeutralButton(String label, DialogInterface.OnClickListener action) { neutral = label; neutralListener = action; return this; }

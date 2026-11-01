@@ -79,6 +79,26 @@ public final class Store extends SQLiteOpenHelper {
         .insertWithOnConflict("settings", null, v, SQLiteDatabase.CONFLICT_REPLACE);
   }
 
+  public java.util.Set<String> excludedPackages() {
+    java.util.Set<String> excluded=new java.util.HashSet<>();
+    try(Cursor c=getReadableDatabase().rawQuery("SELECT name FROM settings WHERE name LIKE 'exclude:%' AND value='1'",null)) {
+      while(c.moveToNext()) excluded.add(c.getString(0).substring(8));
+    }
+    return excluded;
+  }
+
+  public void setSourceChoices(java.util.Map<String,Boolean> allowed) {
+    SQLiteDatabase db=getWritableDatabase(); db.beginTransaction();
+    try {
+      for(java.util.Map.Entry<String,Boolean> choice:allowed.entrySet()) {
+        ContentValues value=new ContentValues(); value.put("name","exclude:"+choice.getKey()); value.put("value",choice.getValue()?"0":"1");
+        if(db.insertWithOnConflict("settings",null,value,SQLiteDatabase.CONFLICT_REPLACE)==-1)
+          throw new android.database.sqlite.SQLiteException("無法儲存記錄來源");
+      }
+      db.setTransactionSuccessful();
+    } finally { db.endTransaction(); }
+  }
+
   public boolean excluded(String pkg) {
     return "1".equals(setting("exclude:" + pkg, "0"));
   }
