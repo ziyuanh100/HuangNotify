@@ -53,7 +53,8 @@ public class SourcePickerTest extends ActivityInstrumentationTestCase2<MainActiv
     Store.IO.submit(()->{}).get(); getInstrumentation().waitForIdleSync(); picker=activity.sourcePicker;
     assertNotNull(picker); assertTrue(picker.dialog.isShowing());
     getInstrumentation().runOnMainSync(()->picker.search.setText("dev.huang.notify.probe"));
-    assertEquals(1,picker.list.getAdapter().getCount()); capture("all-app-source-search.png");
+    getInstrumentation().waitForIdleSync(); getInstrumentation().getUiAutomation().waitForIdle(100,5000);
+    assertEquals(1,picker.list.getAdapter().getCount()); assertNotNull(picker.list.findViewWithTag("dev.huang.notify.probe")); capture("all-app-source-search.png");
   }
   public void testLargeInventoryIsRecycledAndActionsStayVisible() throws Exception {
     List<AppSources.Entry> entries=new ArrayList<>();
@@ -88,6 +89,7 @@ public class SourcePickerTest extends ActivityInstrumentationTestCase2<MainActiv
     return null;
   }
   private void capture(String name) throws Exception {
+    getInstrumentation().waitForIdleSync(); getInstrumentation().getUiAutomation().waitForIdle(100,5000);
     for(String command:new String[]{"mkdir -p /data/local/tmp/huangnotify-ui-preview","screencap -p /data/local/tmp/huangnotify-ui-preview/"+name})
       try(android.os.ParcelFileDescriptor fd=getInstrumentation().getUiAutomation().executeShellCommand(command); java.io.FileInputStream in=new java.io.FileInputStream(fd.getFileDescriptor())) { byte[] bytes=new byte[1024]; while(in.read(bytes)!=-1) {} }
   }

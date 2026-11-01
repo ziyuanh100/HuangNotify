@@ -55,7 +55,7 @@ final class SourcePicker {
     dialog=new AppDialog.Builder(c).setTitle("選擇記錄來源").setExpandedView(body)
         .setPositiveButton("儲存選擇",(d,w)->save.accept(changes()))
         .setNegativeButton("取消",null)
-        .setNeutralButton("記錄範圍說明",(d,w)->{}).create();
+        .setNeutralButton("說明",(d,w)->{}).create();
     dialog.setOnShowListener(d->{
       // The help sheet keeps unsaved selections intact.
       dialog.getButton(AppDialog.BUTTON_NEUTRAL).setOnClickListener(v->new AppDialog.Builder(c)
