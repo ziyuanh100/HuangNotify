@@ -31,7 +31,7 @@ public class CaptureFlowTest extends InstrumentationTestCase {
   }
   @Override protected void tearDown() throws Exception {
     try {
-      shell("am start -W -n "+PROBE+"/.ProbeActivity --ei id 901 --ez cancel true");
+      probe(true);
       if(!wasGranted) {
         if(Build.VERSION.SDK_INT>=28) shell("cmd notification disallow_listener "+COMPONENT);
         else if("null".equals(listenerSetting) || listenerSetting==null || listenerSetting.isEmpty()) shell("settings delete secure enabled_notification_listeners");
@@ -43,10 +43,10 @@ public class CaptureFlowTest extends InstrumentationTestCase {
     } finally { super.tearDown(); }
   }
   public void testScreenshotSummaryIsRecordedAndSurvivesRemoval() throws Exception {
-    shell("am start -W -n "+PROBE+"/.ProbeActivity --ei id 901 --es kind screenshot");
+    probe(false);
     Record saved=awaitRecord(true); assertEquals("截圖已儲存",saved.title); assertTrue(saved.text.contains("未保存圖片"));
     assertEquals(1,Store.IO.submit(()->Store.get(c).list("",PROBE,false,false,20).size()).get().intValue());
-    shell("am start -W -n "+PROBE+"/.ProbeActivity --ei id 901 --ez cancel true");
+    probe(true);
     Record removed=awaitRecord(false); assertEquals(saved.id,removed.id); assertEquals(saved.text,removed.text);
     org.json.JSONObject backup=Store.IO.submit(()->Store.get(c).exportBackup()).get(); BackupFormat.validate(backup);
   }
@@ -58,9 +58,22 @@ public class CaptureFlowTest extends InstrumentationTestCase {
       SystemClock.sleep(100);
     } throw new AssertionError("Screenshot notification not recorded with active="+active+"; "+Store.error);
   }
+  private void probe(boolean cancel) {
+    android.content.Intent intent=new android.content.Intent().setClassName(PROBE,PROBE+".ProbeActivity")
+        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("id",901).putExtra("cancel",cancel).putExtra("kind","screenshot");
+    c.startActivity(intent);
+  }
   private String shell(String command) throws Exception {
-    try(ParcelFileDescriptor fd=getInstrumentation().getUiAutomation().executeShellCommand(command); InputStream in=new FileInputStream(fd.getFileDescriptor()); ByteArrayOutputStream out=new ByteArrayOutputStream()) {
-      byte[] b=new byte[2048]; int n; while((n=in.read(b))!=-1) out.write(b,0,n); return out.toString("UTF-8");
-    }
+    // A stalled shell must fail with its command instead of blocking the entire API 26 suite.
+    java.util.concurrent.atomic.AtomicReference<ParcelFileDescriptor> descriptor=new java.util.concurrent.atomic.AtomicReference<>();
+    java.util.concurrent.ExecutorService executor=java.util.concurrent.Executors.newSingleThreadExecutor(r->{Thread t=new Thread(r,"capture-test-shell"); t.setDaemon(true); return t;});
+    try {
+      return executor.submit(()->{
+        try(ParcelFileDescriptor fd=getInstrumentation().getUiAutomation().executeShellCommand(command); InputStream in=new FileInputStream(fd.getFileDescriptor()); ByteArrayOutputStream out=new ByteArrayOutputStream()) {
+          descriptor.set(fd); byte[] b=new byte[2048]; int n; while((n=in.read(b))!=-1) out.write(b,0,n); return out.toString("UTF-8");
+        }
+      }).get(20,TimeUnit.SECONDS);
+    } catch(java.util.concurrent.TimeoutException e) { throw new AssertionError("Timed out running shell: "+command,e); }
+    finally { ParcelFileDescriptor fd=descriptor.get(); if(fd!=null) try { fd.close(); } catch(IOException ignored) {} executor.shutdownNow(); }
   }
 }
