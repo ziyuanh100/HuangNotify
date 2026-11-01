@@ -20,3 +20,18 @@
 新增圖片摘要、群組子通知、空白／錯誤欄位、ticker、展開標題、現代寄件者及長文字測試。另以獨立 probe APK 經 Android 真正發布帶圖片的群組摘要，驗證通知監聽寫入 SQLite、移除後仍保留、備份格式有效。probe 僅用灰色合成圖片，不包含在公開 APK。
 
 公開 APK 沿用固定官方簽章，可由 1.0.0 覆蓋安裝並保留紀錄；仍維持免費、無廣告、無帳號、MIT 開源。
+
+## 建置來源與校驗
+
+APK 來源：`64347225385d9ec674486b7601a9d93c32c03161`；[CI 41275259738](https://github.com/ziyuanh100/HuangNotify/actions/runs/41275259738)。
+
+- JVM 10 項，Android 8／15／16 模擬器各 60 項裝置測試通過，共 190 項；包含真正的系統圖片通知接收、取消後保留及備份驗證。
+- Debug／Release 建置通過；Lint 0 errors、7 warnings（現有文字資源化警告）。
+- 升級 fixture 使用 1.0.0，驗證通知內容、兩個版本、收藏、備註、暫停、保存期限、完成提示與重新開啟。CI 使用同 runner 的 debug 簽章。
+- Android 8 曾停在測試用 shell 流程；已改成直接啟動 probe 並限制 shell 等待時間，重跑完整測試通過。
+- Android 16 第一次升級驗證被系統 System UI ANR 視窗遮住；保存畫面及 hierarchy 後以全新 runner 重跑，沒有略過 App 的升級斷言。
+- 公開 APK 使用既有固定 release 簽章；APK v2／v3 簽章驗證通過。
+
+APK SHA-256：`c8b19c11785f0b3e52a22a84618fb4fa51778733d54dce98f4648809454e1bd9`。
+
+Samsung A55／Android 16 的實際截圖通知與長時間背景驗收尚未完成，不能以合成通知的通過結果替代。

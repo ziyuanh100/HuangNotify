@@ -125,3 +125,16 @@ alpha.2 的 CI 另外以獨立 instrumentation 將 v1.0.0-alpha.1 的真實 APK 
 - 正式版已公開已知限制，未將 Samsung A55 長時間背景觀察或跨手機加密還原標記為已通過。
 
 Android 16 CI 曾遇到 Quickstep 桌面程式 ANR 視窗遮住安裝確認。已保存安裝畫面與 UI hierarchy，測試只對精確辨識的 Quickstep 系統 ANR 關閉一次桌面程式，保留診斷紀錄；不關閉或忽略 HuangNotify 本身的當機視窗，升級後資料與版本斷言仍照常執行。
+
+
+## 1.0.1 截圖通知相容性修正
+
+APK 來源：`64347225385d9ec674486b7601a9d93c32c03161`；[CI 41275259738](https://github.com/ziyuanh100/HuangNotify/actions/runs/41275259738)。
+
+- JVM 10 項及 Android 8／15／16 各 60 項裝置測試通過，共 190 項；Debug／Release 編譯與 Lint 通過（0 errors、7 個既有文字資源化 warnings）。
+- 六項解析測試涵蓋獨立摘要、同來源／使用者／群組去重、空白與錯誤欄位、ticker／展開標題、Person／圖片訊息及長文字。
+- 獨立 probe APK 實際發布合成 BigPicture 群組摘要，驗證 listener → SQLite → 取消通知後保留 → 匯出備份有效；不含使用者截圖，probe 不包含在公開 APK。
+- Android 8 測試工具移除 am -W 等待，並對 shell 加上逾時診斷；三個 API 均完成通知流程。
+- 以 1.0.0 作為真實 APK 升級 fixture，驗證系統安裝確認、資料保留、完成提示與重新開啟；CI 使用 debug 簽章，公開 APK 另驗固定 release 簽章。
+- Android 16 首次升級被 System UI ANR 遮擋；保存畫面及 hierarchy，使用新 runner 重跑後通過，未放寬 HuangNotify 的通過條件。
+- 未完成 Samsung A55 實際截圖格式與長時間背景實機驗證；文字收錄通過不代表保存圖片。
