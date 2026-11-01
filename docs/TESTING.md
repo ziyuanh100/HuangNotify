@@ -112,3 +112,16 @@ alpha.2 的 CI 另外以獨立 instrumentation 將 v1.0.0-alpha.1 的真實 APK 
 - 三個 API 的舊 APK 經系統確認升級、資料保留、完成提示與重新開啟均通過。CI 使用同 runner 的 debug 簽章；公開 APK 使用固定 release 簽章。
 - QUERY_ALL_PACKAGES 的 Lint 例外僅限該權限宣告：完整來源清單是本次明確需求，scoped queries 無法涵蓋未知且沒有 intent filter 的已安裝 App；未全面關閉 Lint。若上架 Google Play，須另作該商店權限審核。
 - 本次只修正來源選擇清單；不代表已驗證所有第三方 App 的通知擷取。Samsung A55 的長時間背景與跨裝置還原實機驗收仍待完成。
+
+
+## 1.0.0 正式版驗證
+
+程式來源：`b9b0b95440279b35f1fb2b6dca1d0b5ecd08abb9`；CI：[41268341966](https://github.com/ziyuanh100/HuangNotify/actions/runs/41268341966)。
+
+- JVM 10 項，Android 8／15／16 各 53 項裝置測試通過，共 169 項；Debug／Release 建置與 Lint 通過。
+- 新增驗證：預設正式版頻道、使用者明確選擇測試版的偏好保留、RC.2 可發現 1.0.0 正式更新、正式頻道略過較高版號的 RC。
+- 升級 fixture 改為 RC.2，三個 API 均實際經過 Android 安裝確認升級至 1.0.0，驗證通知、歷程、收藏、備註、暫停與保存期限保留、完成提示與重新開啟。
+- CI 升級使用同一 runner 的 debug 簽章；公開 APK 另用固定官方 release 簽章簽署並驗證 APK v2／v3 與 SHA-256。
+- 正式版已公開已知限制，未將 Samsung A55 長時間背景觀察或跨手機加密還原標記為已通過。
+
+Android 16 CI 曾遇到 Quickstep 桌面程式 ANR 視窗遮住安裝確認。已保存安裝畫面與 UI hierarchy，測試只對精確辨識的 Quickstep 系統 ANR 關閉一次桌面程式，保留診斷紀錄；不關閉或忽略 HuangNotify 本身的當機視窗，升級後資料與版本斷言仍照常執行。
