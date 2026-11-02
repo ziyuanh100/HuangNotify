@@ -54,7 +54,7 @@ public class BackupUiTest extends ActivityInstrumentationTestCase2<MainActivity>
     try{
       getInstrumentation().runOnMainSync(()->main.backupScreen.prepareExport(null));BackupOperation op=BackupOperation.current();assertNotNull(op);recreateMain();
       assertSame(op,BackupOperation.current());assertFalse(op.task.cancelled.get());assertNotNull(main.backupScreen.progress);assertTrue(main.backupScreen.progress.isShowing());
-      getInstrumentation().runOnMainSync(()->main.backupScreen.progress.getButton(AppDialog.BUTTON_NEGATIVE).performClick());release.countDown();AutoBackup.IO.submit(()->{}).get(30,TimeUnit.SECONDS);getInstrumentation().waitForIdleSync();assertNull(BackupOperation.current());
+      getInstrumentation().runOnMainSync(()->main.backupScreen.progress.getButton(AppDialog.BUTTON_NEGATIVE).performClick());getInstrumentation().runOnMainSync(()->{main.backupScreen.progress.dismiss();main.backupScreen.update();});assertTrue("Cancelling operation lost its progress after dismissal",main.backupScreen.progress.isShowing());release.countDown();AutoBackup.IO.submit(()->{}).get(30,TimeUnit.SECONDS);getInstrumentation().waitForIdleSync();assertNull(BackupOperation.current());
     }finally{release.countDown();}
   }
   public void testRotationRetainsPendingPickerAndRestorePreviewChoice()throws Exception{

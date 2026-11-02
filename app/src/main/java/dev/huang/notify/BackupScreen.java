@@ -32,7 +32,7 @@ final class BackupScreen implements BackupOperation.Observer {
   private void hideProgress(){handler.removeCallbacks(tick);if(progress!=null)progress.dismiss();progress=null;}
   public void update(){
     if(!resumed||destroyed)return;BackupOperation op=BackupOperation.current();if(op==null){hideProgress();return;}BackupOperation.State state=op.visibleState();
-    if(op==shown&&state==shownState){if(progress==null&&op.working)showProgress(op);return;}
+    if(op==shown&&state==shownState){if((progress==null||!progress.isShowing())&&op.working)showProgress(op);return;}
     shown=op;shownState=state;hideProgress();if(prompt!=null){prompt.dismiss();prompt=null;}
     switch(state){
       case EXPORT_PICKER:if(!op.pickerLaunched){op.pickerLaunched=true;try{activity.startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE,"HuangNotify_"+System.currentTimeMillis()+(op.session.encrypted?".hnbk":".hnjson")),101);}catch(Exception e){op.fail(e);}}break;
