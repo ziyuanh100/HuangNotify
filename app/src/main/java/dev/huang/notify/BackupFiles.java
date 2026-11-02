@@ -11,26 +11,34 @@ import java.util.concurrent.ExecutionException;
 
 /** Operation-owned private files; neither a 100-MiB backup nor its JSON tree lives in the heap. */
 final class BackupFiles {
+  private static final Set<String> ACTIVE_DIRS=new HashSet<>();
   static final class Session implements AutoCloseable {
-    final File dir,input,plain,output,database;File ready;BackupArchive.Stage stage;boolean encrypted;
+    final File dir,input,plain,output,database;File ready;BackupArchive.Stage stage;boolean encrypted;byte[] sha256;long readyBytes;
     Session(Context c)throws IOException {
       File root=new File(c.getCacheDir(),"backup-work");if(!root.isDirectory()&&!root.mkdirs())throw new IOException();
-      dir=new File(root,"op_"+UUID.randomUUID());if(!dir.mkdir())throw new IOException();
+      dir=new File(root,"op_"+UUID.randomUUID());synchronized(ACTIVE_DIRS){if(!dir.mkdir())throw new IOException();ACTIVE_DIRS.add(dir.getAbsolutePath());}
       input=new File(dir,"input.bin");plain=new File(dir,"plain.json");output=new File(dir,"output.hnbk");database=new File(dir,"stage.db");
     }
-    public void close(){try{if(stage!=null){stage.close();stage=null;}}finally{erase(dir);}}
+    public void close(){try{if(stage!=null){stage.close();stage=null;}}finally{synchronized(ACTIVE_DIRS){erase(dir);ACTIVE_DIRS.remove(dir.getAbsolutePath());}}}
   }
   static void erase(File file){File[] children=file.listFiles();if(children!=null)for(File child:children)erase(child);file.delete();}
-  static void cleanStale(Context c){File[] dirs=new File(c.getCacheDir(),"backup-work").listFiles();if(dirs!=null)for(File dir:dirs)if(dir.getName().matches("op_[0-9a-f-]{36}")&&System.currentTimeMillis()-dir.lastModified()>86400000L)erase(dir);}
+  static void cleanStale(Context c){synchronized(ACTIVE_DIRS){File[] dirs=new File(c.getCacheDir(),"backup-work").listFiles();if(dirs!=null)for(File dir:dirs)if(dir.getName().matches("op_[0-9a-f-]{36}")&&!ACTIVE_DIRS.contains(dir.getAbsolutePath())&&System.currentTimeMillis()-dir.lastModified()>86400000L)erase(dir);}}
+  static void cleanInterrupted(Context c){synchronized(ACTIVE_DIRS){File[] dirs=new File(c.getCacheDir(),"backup-work").listFiles();if(dirs!=null)for(File dir:dirs)if(dir.getName().matches("op_[0-9a-f-]{36}")&&!ACTIVE_DIRS.contains(dir.getAbsolutePath()))erase(dir);}}
   static void space(Context c,long needed){if(new StatFs(c.getCacheDir().getAbsolutePath()).getAvailableBytes()<needed+4*1024*1024L)throw new BackupProblem("儲存空間不足，請先清理手機空間");}
   static Session export(Context context,char[] password,BackupTask task)throws Exception {
     Session session=new Session(context);boolean success=false;File snapshot=new File(session.dir,"snapshot.db");
     try {
       task.check();File live=context.getDatabasePath("notifications.db");space(context,live.length()+new File(live.getPath()+"-wal").length());task.phase("準備備份",0);
       Store.IO.submit(()->{Store.get(context).snapshot(snapshot,task);return null;}).get();task.check();
-      try(SQLiteDatabase db=SQLiteDatabase.openDatabase(snapshot.getAbsolutePath(),null,SQLiteDatabase.OPEN_READWRITE|SQLiteDatabase.NO_LOCALIZED_COLLATORS);OutputStream out=new BufferedOutputStream(new FileOutputStream(session.plain))) {BackupArchive.write(db,out,task);}
-      SQLiteDatabase.deleteDatabase(snapshot);task.check();session.ready=session.plain;session.encrypted=password!=null;
-      if(password!=null){space(context,session.plain.length());task.phase("加密備份",session.plain.length());try(InputStream in=new BufferedInputStream(new FileInputStream(session.plain));OutputStream out=new BufferedOutputStream(new FileOutputStream(session.output))){BackupStreamCrypto.encrypt(in,out,password,task.cancelled,task::progress);}session.ready=session.output;session.plain.delete();}
+      session.encrypted=password!=null;session.ready=session.encrypted?session.output:session.plain;task.encryptedExport=session.encrypted;
+      MessageDigest hash=MessageDigest.getInstance("SHA-256");
+      try(SQLiteDatabase db=SQLiteDatabase.openDatabase(snapshot.getAbsolutePath(),null,SQLiteDatabase.OPEN_READWRITE|SQLiteDatabase.NO_LOCALIZED_COLLATORS);
+          OutputStream file=new BufferedOutputStream(new FileOutputStream(session.ready),64*1024);
+          OutputStream digested=new java.security.DigestOutputStream(file,hash)) {
+        if(password!=null){task.phase("密碼金鑰導出",0);try(BackupStreamCrypto.Encoder encrypted=new BackupStreamCrypto.Encoder(digested,password,task.cancelled,n->{})){BackupArchive.write(db,encrypted,task);}}
+        else BackupArchive.write(db,digested,task);
+      }
+      session.sha256=hash.digest();session.readyBytes=session.ready.length();SQLiteDatabase.deleteDatabase(snapshot);
       task.check();success=true;return session;
     } finally {if(!success)session.close();}
   }
@@ -69,9 +77,12 @@ final class BackupFiles {
     MessageDigest digest=MessageDigest.getInstance("SHA-256");long count=0;byte[] buffer=new byte[64*1024];int n;
     while((n=in.read(buffer))!=-1){task.check();count+=n;if(count>length)throw new IOException("備份驗證失敗");digest.update(buffer,0,n);task.progress(count);}if(count!=length)throw new IOException("備份驗證失敗");task.check();return digest.digest();
   }
+  static byte[] expected(Session session,BackupTask task)throws Exception{
+    task.check();if(session.sha256!=null){if(session.ready.length()!=session.readyBytes)throw new IOException("備份驗證失敗");return session.sha256.clone();}
+    try(InputStream in=new FileInputStream(session.ready)){return digest(in,session.ready.length(),task);}
+  }
   static void save(Context c,Session session,Uri uri,BackupTask task)throws Exception {
-    long size=session.ready.length();byte[] expected;
-    try(InputStream in=new FileInputStream(session.ready)){expected=digest(in,size,task);}
+    long size=session.ready.length();byte[] expected=expected(session,task);
     task.phase("儲存備份",size);
     try(InputStream in=new BufferedInputStream(new FileInputStream(session.ready));OutputStream out=c.getContentResolver().openOutputStream(uri,"wt")){if(out==null)throw new IOException();copy(in,out,BackupStreamCrypto.MAX_FILE_BYTES,task);}
     task.phase("驗證已儲存的備份",size);

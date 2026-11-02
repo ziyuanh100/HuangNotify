@@ -40,6 +40,10 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
     if (phase.isEmpty()) { super.onStart(); return; }
     try {
       android.content.Context c=getTargetContext();
+      if(phase.equals("benchmark")) {
+        BackupBenchmark.run(c,message->{Bundle status=new Bundle();status.putString("benchmark_progress",message);sendStatus(0,status);});
+        Bundle report=new Bundle();report.putString("benchmark","PASS: completed paired baseline/new benchmark");finish(Activity.RESULT_OK,report);return;
+      }
       if(phase.equals("before")) {
         c.getSharedPreferences("updates",0).edit().putBoolean("enabled",false).commit();
         c.getSharedPreferences("permission_guide",0).edit().putInt("step",3).commit();

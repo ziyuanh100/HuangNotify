@@ -25,29 +25,40 @@ public final class BackupStreamCrypto {
     try {return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();}
     finally {spec.clearPassword();}
   }
-  private static Cipher frame(int mode,byte[] key,byte[] header,int index,int size,long total) throws Exception {
+  private static Cipher frame(Cipher cipher,int mode,byte[] key,byte[] header,int index,int size,long total) throws Exception {
     byte[] nonce=ByteBuffer.allocate(12).put(header,25,8).putInt(index).array();
-    Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");
     cipher.init(mode,new SecretKeySpec(key,"AES"),new GCMParameterSpec(128,nonce));
-    cipher.updateAAD(ByteBuffer.allocate(HEADER+16).put(header).putInt(index).putInt(size).putLong(total).array());
-    return cipher;
+    cipher.updateAAD(ByteBuffer.allocate(HEADER+16).put(header).putInt(index).putInt(size).putLong(total).array());return cipher;
+  }
+  /** Push-based HNBK2 writer. flush never creates short frames; finish authenticates the terminal. */
+  static final class Encoder extends OutputStream {
+    final DataOutputStream out;final AtomicBoolean cancelled;final Progress progress;
+    final byte[] header,key,buffer=new byte[CHUNK];final Cipher cipher;
+    long total;int used,index;boolean closed;
+    Encoder(OutputStream destination,char[] password,AtomicBoolean cancelled,Progress progress)throws Exception{
+      if(password.length<8)throw new BackupProblem("備份密碼至少需要 8 個字元");check(cancelled);
+      this.out=new DataOutputStream(destination);this.cancelled=cancelled;this.progress=progress;
+      SecureRandom random=new SecureRandom();byte[] salt=new byte[16],prefix=new byte[8];random.nextBytes(salt);random.nextBytes(prefix);
+      header=ByteBuffer.allocate(HEADER).put(MAGIC).putInt(ITERATIONS).put(salt).put(prefix).array();key=key(password,salt);
+      try{cipher=Cipher.getInstance("AES/GCM/NoPadding");out.write(header);}catch(Exception e){Arrays.fill(key,(byte)0);throw e;}
+    }
+    public void write(int b)throws IOException{byte[] one={(byte)b};write(one,0,1);}
+    public void write(byte[] bytes,int offset,int length)throws IOException{
+      if(closed)throw new IOException("備份輸出已關閉");if(offset<0||length<0||offset>bytes.length-length)throw new IndexOutOfBoundsException();
+      check(cancelled);if(total+used+length>MAX_BYTES)throw new BackupProblem("備份超過 100 MiB，請先整理紀錄");
+      while(length>0){check(cancelled);int n=Math.min(CHUNK-used,length);System.arraycopy(bytes,offset,buffer,used,n);used+=n;offset+=n;length-=n;if(used==CHUNK)emit();}
+    }
+    private void emit()throws IOException{
+      try{check(cancelled);out.writeInt(used);out.write(frame(cipher,Cipher.ENCRYPT_MODE,key,header,index++,used,total).doFinal(buffer,0,used));total+=used;used=0;progress.update(total);}
+      catch(IOException e){throw e;}catch(Exception e){throw new IOException("無法加密備份",e);}
+    }
+    public void flush()throws IOException{check(cancelled);out.flush();}
+    public void close()throws IOException{if(closed)return;try{check(cancelled);if(used>0)emit();emit();out.flush();}finally{closed=true;Arrays.fill(key,(byte)0);Arrays.fill(buffer,(byte)0);}}
   }
   public static void encrypt(InputStream in,OutputStream output,char[] password,AtomicBoolean cancelled,Progress progress) throws Exception {
-    if(password.length<8)throw new BackupProblem("備份密碼至少需要 8 個字元");
-    check(cancelled); SecureRandom random=new SecureRandom(); byte[] salt=new byte[16],prefix=new byte[8]; random.nextBytes(salt);random.nextBytes(prefix);
-    byte[] header=ByteBuffer.allocate(HEADER).put(MAGIC).putInt(ITERATIONS).put(salt).put(prefix).array(),key=key(password,salt),buffer=new byte[CHUNK];
-    DataOutputStream out=new DataOutputStream(output); long total=0;int index=0;
-    try {
-      out.write(header);
-      while(true) {
-        check(cancelled);int size=0,n;
-        while(size<CHUNK && (n=in.read(buffer,size,CHUNK-size))!=-1) {check(cancelled);if(n==0)continue;size+=n;}
-        if(size==0)break;
-        if(total+size>MAX_BYTES)throw new BackupProblem("備份超過 100 MiB，請先整理紀錄");
-        out.writeInt(size);out.write(frame(Cipher.ENCRYPT_MODE,key,header,index++,size,total).doFinal(buffer,0,size));total+=size;progress.update(total);
-      }
-      check(cancelled);out.writeInt(0);out.write(frame(Cipher.ENCRYPT_MODE,key,header,index,0,total).doFinal());out.flush();
-    } finally {Arrays.fill(key,(byte)0);Arrays.fill(buffer,(byte)0);}
+    try(Encoder writer=new Encoder(output,password,cancelled,progress)){
+      byte[] buffer=new byte[CHUNK];try{int n;while((n=in.read(buffer))!=-1){check(cancelled);writer.write(buffer,0,n);}}finally{Arrays.fill(buffer,(byte)0);}
+    }
   }
   /** The caller writes only into an app-private temporary file until this method fully succeeds. */
   public static void decrypt(InputStream input,OutputStream out,char[] password,AtomicBoolean cancelled,Progress progress) throws Exception {
@@ -55,10 +66,11 @@ public final class BackupStreamCrypto {
     if(!encrypted(header)||ByteBuffer.wrap(header,5,4).getInt()!=ITERATIONS)throw new BackupProblem("不支援的加密版本或參數");
     check(cancelled);byte[] key=key(password,Arrays.copyOfRange(header,9,25));long total=0;int index=0;
     try {
+      Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");
       while(true) {
         check(cancelled);int size=in.readInt();
         if(size<0 || size>CHUNK || total+size>MAX_BYTES || index>MAX_BYTES/CHUNK+1)throw new BackupProblem("加密備份大小或區塊格式錯誤");
-        byte[] encrypted=new byte[size+16];in.readFully(encrypted);byte[] clear=frame(Cipher.DECRYPT_MODE,key,header,index++,size,total).doFinal(encrypted);
+        byte[] encrypted=new byte[size+16];in.readFully(encrypted);byte[] clear=frame(cipher,Cipher.DECRYPT_MODE,key,header,index++,size,total).doFinal(encrypted);
         try {
           if(size==0) {if(in.read()!=-1)throw new BackupProblem("備份末尾含多餘資料");check(cancelled);out.flush();return;}
           out.write(clear);total+=size;progress.update(total);

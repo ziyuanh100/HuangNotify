@@ -83,7 +83,7 @@ final class AutoBackup {
           if (cancelled.get()) throw new InterruptedIOException();
           String prefix = "HuangNotify_auto_" + owner + "_";
           String name = prefix + String.format(Locale.ROOT, "%013d", System.currentTimeMillis()) + "_" + UUID.randomUUID() + ".hnbk";
-          boolean clean = saveVerified(new Documents(c, Uri.parse(tree)), name, prefix, session.ready, count, task);
+          boolean clean = saveVerified(new Documents(c, Uri.parse(tree)), name, prefix, session, count, task);
           synchronized (LOCK) {
             if (cancelled.get() || generation!=prefs(c).getLong("generation",0)) throw new InterruptedIOException();
             prefs(c).edit().putLong("success", System.currentTimeMillis()).putString("error", clean ? "" : "新備份成功；部分舊檔無法清理，稍後可重試").apply();
@@ -133,7 +133,11 @@ final class AutoBackup {
   static boolean saveVerified(Destination destination,String name,String prefix,File file,int keep,BackupTask task)throws Exception {
     if(keep<1||keep>30)throw new BackupProblem("保留份數不正確");task.check();long size=file.length();byte[] expected;
     task.phase("檢查備份檔",size);try(InputStream in=new FileInputStream(file)){expected=BackupFiles.digest(in,size,task);}
-    String id=destination.create(name);
+    return saveVerified(destination,name,prefix,file,keep,task,expected);
+  }
+  static boolean saveVerified(Destination d,String name,String prefix,BackupFiles.Session s,int keep,BackupTask task)throws Exception{return saveVerified(d,name,prefix,s.ready,keep,task,BackupFiles.expected(s,task));}
+  private static boolean saveVerified(Destination destination,String name,String prefix,File file,int keep,BackupTask task,byte[] expected)throws Exception {
+    if(keep<1||keep>30)throw new BackupProblem("保留份數不正確");task.check();long size=file.length();String id=destination.create(name);
     try {
       task.phase("儲存備份",size);
       try(InputStream in=new FileInputStream(file);OutputStream out=destination.write(id)){if(out==null)throw new IOException();BackupFiles.copy(in,out,BackupStreamCrypto.MAX_FILE_BYTES,task);}

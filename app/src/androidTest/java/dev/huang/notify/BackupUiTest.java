@@ -14,7 +14,7 @@ public class BackupUiTest extends ActivityInstrumentationTestCase2<MainActivity>
   MainActivity main;
   public BackupUiTest(){super(MainActivity.class);}
   @Override protected void setUp()throws Exception{super.setUp();Context c=getInstrumentation().getTargetContext();UpdateChecker.enable(c,false);c.getSharedPreferences("permission_guide",0).edit().putInt("step",3).commit();}
-  @Override protected void tearDown()throws Exception{if(main!=null)getInstrumentation().runOnMainSync(()->{AppDialog.dismissAll(main);main.finish();});AutoBackup.IO.submit(()->{}).get(30,TimeUnit.SECONDS);super.tearDown();}
+  @Override protected void tearDown()throws Exception{if(main!=null)getInstrumentation().runOnMainSync(()->{if(BackupOperation.current()!=null)BackupOperation.current().cancel();AppDialog.dismissAll(main);main.finish();});AutoBackup.IO.submit(()->{}).get(30,TimeUnit.SECONDS);super.tearDown();}
   private AppDialog dialog()throws Exception{java.lang.reflect.Field f=AppDialog.class.getDeclaredField("OPEN");f.setAccessible(true);@SuppressWarnings("unchecked") Map<Context,List<AppDialog>> open=(Map<Context,List<AppDialog>>)f.get(null);List<AppDialog> all=open.get(main);return all==null||all.isEmpty()?null:all.get(all.size()-1);}
   public void testCancelExportBeforeSnapshotLeavesRecordsAndCleansPrivateFiles()throws Exception{
     main=getActivity();getInstrumentation().waitForIdleSync();long before=Store.IO.submit(()->Store.get(main).counts()[0]).get();CountDownLatch release=new CountDownLatch(1);
@@ -47,6 +47,30 @@ public class BackupUiTest extends ActivityInstrumentationTestCase2<MainActivity>
     assertNotNull(find(dialog().getWindow().getDecorView(),"儲存概況"));capture("image-storage.png");
     getInstrumentation().runOnMainSync(()->dialogUnchecked().getButton(AppDialog.BUTTON_NEUTRAL).performClick());getInstrumentation().waitForIdleSync();
     AppDialog.Toggle toggle=toggle(dialog().getWindow().getDecorView());assertNotNull(toggle);assertFalse(toggle.isChecked());getInstrumentation().runOnMainSync(()->dialogUnchecked().getButton(AppDialog.BUTTON_NEGATIVE).performClick());
+  }
+  public void testRotationPreservesQueuedExportAndCancellation()throws Exception{
+    main=getActivity();getInstrumentation().waitForIdleSync();CountDownLatch release=new CountDownLatch(1);
+    Store.IO.execute(()->{try{release.await(30,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}});
+    try{
+      getInstrumentation().runOnMainSync(()->main.backupScreen.prepareExport(null));BackupOperation op=BackupOperation.current();assertNotNull(op);recreateMain();
+      assertSame(op,BackupOperation.current());assertFalse(op.task.cancelled.get());assertNotNull(main.backupScreen.progress);assertTrue(main.backupScreen.progress.isShowing());
+      getInstrumentation().runOnMainSync(()->main.backupScreen.progress.getButton(AppDialog.BUTTON_NEGATIVE).performClick());release.countDown();AutoBackup.IO.submit(()->{}).get(30,TimeUnit.SECONDS);getInstrumentation().waitForIdleSync();assertNull(BackupOperation.current());
+    }finally{release.countDown();}
+  }
+  public void testRotationRetainsPendingPickerAndRestorePreviewChoice()throws Exception{
+    main=getActivity();getInstrumentation().waitForIdleSync();BackupOperation[] reference=new BackupOperation[1];
+    getInstrumentation().runOnMainSync(()->{reference[0]=BackupOperation.begin(main,BackupOperation.State.IMPORT_PICKER);reference[0].pickerLaunched=true;});recreateMain();assertSame(reference[0],BackupOperation.current());
+    getInstrumentation().runOnMainSync(()->main.onActivityResult(102,Activity.RESULT_CANCELED,null));getInstrumentation().waitForIdleSync();assertNull(BackupOperation.current());
+    BackupFiles.Session session=AutoBackup.IO.submit(()->BackupFiles.export(main.getApplicationContext(),null,new BackupTask())).get(30,TimeUnit.SECONDS);
+    session.stage=BackupArchive.read(session.ready,session.database,new BackupTask());long before=Store.IO.submit(()->Store.get(main).counts()[0]).get();
+    getInstrumentation().runOnMainSync(()->{reference[0]=BackupOperation.begin(main,BackupOperation.State.PREVIEW);reference[0].session=session;main.backupScreen.update();});getInstrumentation().waitForIdleSync();
+    AppDialog.Toggle settings=toggle(dialog().getWindow().getDecorView());assertNotNull(settings);getInstrumentation().runOnMainSync(settings::performClick);assertTrue(reference[0].restoreSettings);recreateMain();
+    assertSame(reference[0],BackupOperation.current());assertTrue(toggle(dialog().getWindow().getDecorView()).isChecked());capture("restore-preview-rotated.png");
+    getInstrumentation().runOnMainSync(()->dialogUnchecked().getButton(AppDialog.BUTTON_NEGATIVE).performClick());getInstrumentation().waitForIdleSync();assertNull(BackupOperation.current());assertEquals(before,Store.IO.submit(()->Store.get(main).counts()[0]).get().longValue());
+  }
+  private void recreateMain()throws Exception{
+    Instrumentation.ActivityMonitor monitor=getInstrumentation().addMonitor(MainActivity.class.getName(),null,false);
+    try{getInstrumentation().runOnMainSync(()->main.recreate());Activity replacement=getInstrumentation().waitForMonitorWithTimeout(monitor,10000);assertNotNull("Activity recreation did not finish",replacement);main=(MainActivity)replacement;getInstrumentation().waitForIdleSync();}finally{getInstrumentation().removeMonitor(monitor);}
   }
   private AppDialog dialogUnchecked(){try{return dialog();}catch(Exception e){throw new RuntimeException(e);}}
   private View find(View v,String text){if(v instanceof TextView&&text.contentEquals(((TextView)v).getText()))return v;if(v instanceof ViewGroup)for(int i=0;i<((ViewGroup)v).getChildCount();i++){View found=find(((ViewGroup)v).getChildAt(i),text);if(found!=null)return found;}return null;}

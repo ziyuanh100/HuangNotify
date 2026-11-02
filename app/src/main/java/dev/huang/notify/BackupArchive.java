@@ -26,21 +26,24 @@ final class BackupArchive {
     w.name("image_status").value(status).name("images").beginArray();for(String hash:refs)w.value(hash);w.endArray();
   }
   static void write(SQLiteDatabase db,OutputStream destination,BackupTask task) throws Exception {
-    task.phase("建立備份",0);int records=0,versions=0,images=0;
-    try(JsonWriter w=new JsonWriter(new OutputStreamWriter(new LimitedOutput(destination,task),StandardCharsets.UTF_8))) {
+    task.phase(task.encryptedExport?"建立與加密備份":"建立備份",0);int records=0,versions=0,images=0;
+    try(JsonWriter w=new JsonWriter(new BufferedWriter(new OutputStreamWriter(new LimitedOutput(destination,task),StandardCharsets.UTF_8),64*1024))) {
       w.beginObject().name("format").value("HuangNotify").name("version").value(3).name("created").value(System.currentTimeMillis());
       w.name("records").beginArray();
-      try(Cursor c=db.rawQuery("SELECT * FROM records ORDER BY first_seen,id",null)) {
+      // Four ordered cursors replace per-record/per-version queries; rows remain bounded in CursorWindow.
+      try(Cursor c=db.rawQuery("SELECT * FROM records ORDER BY id DESC",null);
+          Cursor v=db.rawQuery("SELECT * FROM versions INDEXED BY versions_record ORDER BY record_id DESC,time DESC,rowid DESC",null);
+          Links current=new Links(db.rawQuery("SELECT record_id,image_hash FROM record_images ORDER BY record_id DESC,position",null));
+          Links history=new Links(db.rawQuery("SELECT vi.version_id,vi.image_hash FROM versions v INDEXED BY versions_record CROSS JOIN version_images vi ON vi.version_id=v.id ORDER BY v.record_id DESC,v.time DESC,v.rowid DESC,vi.position",null))) {
+        boolean more=v.moveToFirst();
         while(c.moveToNext()) {
           task.check();if(++records>MAX_RECORDS)throw invalid("通知筆數超過上限");w.beginObject();String id=text(c,"id");
           for(String name:TEXT)w.name(name).value(text(c,name));for(String name:TIMES)w.name(name).value(number(c,name));
-          imageFields(w,text(c,"image_status"),refs(db,"record_images","record_id",id));w.name("versions").beginArray();
-          try(Cursor v=db.rawQuery("SELECT * FROM versions WHERE record_id=? ORDER BY time DESC,rowid DESC",new String[]{id})) {
-            while(v.moveToNext()) {
-              task.check();if(++versions>MAX_VERSIONS)throw invalid("更新歷程超過上限");w.beginObject();
-              for(String name:new String[]{"id","title","body"})w.name(name).value(text(v,name));w.name("time").value(number(v,"time"));
-              imageFields(w,text(v,"image_status"),refs(db,"version_images","version_id",text(v,"id")));w.endObject();
-            }
+          imageFields(w,text(c,"image_status"),current.take(id));w.name("versions").beginArray();
+          while(more&&id.equals(text(v,"record_id"))) {
+            task.check();if(++versions>MAX_VERSIONS)throw invalid("更新歷程超過上限");w.beginObject();
+            for(String name:new String[]{"id","title","body"})w.name(name).value(text(v,name));w.name("time").value(number(v,"time"));
+            imageFields(w,text(v,"image_status"),history.take(text(v,"id")));w.endObject();more=v.moveToNext();
           }
           w.endArray().endObject();
         }
@@ -58,6 +61,11 @@ final class BackupArchive {
       }
       task.check();w.endObject().endObject();w.flush();
     }
+  }
+  private static final class Links implements AutoCloseable{
+    final Cursor cursor;boolean more;Links(Cursor c){cursor=c;more=c.moveToFirst();}
+    List<String> take(String id){List<String> refs=new ArrayList<>();while(more&&id.equals(cursor.getString(0))){refs.add(cursor.getString(1));more=cursor.moveToNext();}return refs;}
+    public void close(){cursor.close();}
   }
   private static IllegalArgumentException invalid(String message){return new BackupProblem(message);}
   static final class LimitedOutput extends FilterOutputStream {

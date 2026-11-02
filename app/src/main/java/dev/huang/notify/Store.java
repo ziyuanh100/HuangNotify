@@ -239,6 +239,9 @@ public final class Store extends SQLiteOpenHelper {
   }
 
   public List<Record> list(String query, String pkg, boolean favorite, boolean today, int limit) {
+    return listFiltered(query,pkg,favorite,today?todayStart():-1,-1,false,limit);
+  }
+  List<Record> listFiltered(String query,String pkg,boolean favorite,long start,long end,boolean images,int limit) {
     List<String> args = new ArrayList<>();
     String where = "1=1";
     if (!query.trim().isEmpty()) {
@@ -253,10 +256,9 @@ public final class Store extends SQLiteOpenHelper {
       args.add(pkg);
     }
     if (favorite) where += " AND favorite=1";
-    if (today) {
-      where += " AND first_seen>=?";
-      args.add(Long.toString(todayStart()));
-    }
+    if(start>=0){where+=" AND first_seen>=?";args.add(Long.toString(start));}
+    if(end>=0){where+=" AND first_seen<?";args.add(Long.toString(end));}
+    if(images)where+=" AND (EXISTS(SELECT 1 FROM record_images i WHERE i.record_id=r.id) OR EXISTS(SELECT 1 FROM versions v JOIN version_images i ON i.version_id=v.id WHERE v.record_id=r.id))";
     List<Record> result = new ArrayList<>();
     try (Cursor c =
         getReadableDatabase()
@@ -264,7 +266,7 @@ public final class Store extends SQLiteOpenHelper {
                 "SELECT r.*, (SELECT COUNT(*) FROM versions v WHERE v.record_id=r.id) AS"
                     + " version_count, (SELECT COUNT(*) FROM record_images ri WHERE ri.record_id=r.id) AS image_count FROM records r WHERE "
                     + where
-                    + " ORDER BY first_seen DESC LIMIT "
+                    + " ORDER BY first_seen DESC,id DESC LIMIT "
                     + limit,
                 args.toArray(new String[0]))) {
       while (c.moveToNext()) result.add(record(c));
@@ -534,11 +536,11 @@ public final class Store extends SQLiteOpenHelper {
 
   /** Called on Store.IO: checkpoint and hold the writer lock for the short file-copy phase. */
   void snapshot(java.io.File target,BackupTask task)throws Exception {
-    SQLiteDatabase db=getWritableDatabase();
+    SQLiteDatabase db=getWritableDatabase();task.phase("整理資料庫",0);task.check();
     try(Cursor c=db.rawQuery("PRAGMA wal_checkpoint(FULL)",null)) {
       if(!c.moveToFirst() || c.getInt(0)!=0 || c.getInt(1)!=c.getInt(2))throw new BackupProblem("資料庫正忙碌，請稍後再備份");
     }
-    db.beginTransaction();
+    task.phase("複製一致性快照",databaseFile.length());db.beginTransaction();
     try(java.io.InputStream in=new java.io.BufferedInputStream(new java.io.FileInputStream(databaseFile));java.io.OutputStream out=new java.io.BufferedOutputStream(new java.io.FileOutputStream(target))) {
       BackupFiles.copy(in,out,Long.MAX_VALUE,task);db.setTransactionSuccessful();
     } finally {db.endTransaction();}
@@ -590,6 +592,13 @@ public final class Store extends SQLiteOpenHelper {
     } finally {db.endTransaction();}
   }
   long[] imageUsage() {try(Cursor c=getReadableDatabase().rawQuery("SELECT COUNT(*),COALESCE(SUM(length(data)),0) FROM images WHERE EXISTS(SELECT 1 FROM record_images r WHERE r.image_hash=images.hash) OR EXISTS(SELECT 1 FROM version_images v WHERE v.image_hash=images.hash)",null)){c.moveToFirst();return new long[]{c.getLong(0),c.getLong(1)};}}
+  long[] imageCleanupPreview(boolean includeFavorites){
+    SQLiteDatabase db=getReadableDatabase();String target=includeFavorites?"1=1":"r.favorite=0";
+    long count;try(Cursor c=db.rawQuery("SELECT COUNT(*) FROM records r WHERE "+target+" AND (EXISTS(SELECT 1 FROM record_images i WHERE i.record_id=r.id) OR EXISTS(SELECT 1 FROM versions v JOIN version_images i ON i.version_id=v.id WHERE v.record_id=r.id))",null)){c.moveToFirst();count=c.getLong(0);}
+    String candidates="EXISTS(SELECT 1 FROM record_images x JOIN records r ON r.id=x.record_id WHERE x.image_hash=i.hash AND "+target+") OR EXISTS(SELECT 1 FROM version_images x JOIN versions v ON v.id=x.version_id JOIN records r ON r.id=v.record_id WHERE x.image_hash=i.hash AND "+target+")";
+    String retained=includeFavorites?"0":"EXISTS(SELECT 1 FROM record_images x JOIN records r ON r.id=x.record_id WHERE x.image_hash=i.hash AND r.favorite=1) OR EXISTS(SELECT 1 FROM version_images x JOIN versions v ON v.id=x.version_id JOIN records r ON r.id=v.record_id WHERE x.image_hash=i.hash AND r.favorite=1)";
+    try(Cursor c=db.rawQuery("SELECT COUNT(*),COALESCE(SUM(CASE WHEN ("+retained+") THEN 0 ELSE length(data) END),0) FROM images i WHERE ("+candidates+")",null)){c.moveToFirst();return new long[]{count,c.getLong(0),c.getLong(1)};}
+  }
   long clearImages(boolean includeFavorites) {
     SQLiteDatabase db=getWritableDatabase();long before=imageUsage()[1];db.beginTransaction();
     try {
@@ -618,8 +627,9 @@ public final class Store extends SQLiteOpenHelper {
     }finally{db.endTransaction();}
   }
   JSONArray diagnosticEvents()throws Exception {
-    JSONArray rows=new JSONArray();try(Cursor c=getReadableDatabase().rawQuery("SELECT time,code,pkg FROM diagnostics ORDER BY id DESC",null)){while(c.moveToNext())rows.put(new JSONObject().put("time",c.getLong(0)).put("code",c.getString(1)).put("package",c.getString(2)));}return rows;
+    JSONArray rows=new JSONArray();try(Cursor c=getReadableDatabase().rawQuery("SELECT time,code,pkg,id FROM diagnostics ORDER BY id DESC",null)){while(c.moveToNext())rows.put(new JSONObject().put("id",c.getLong(3)).put("time",c.getLong(0)).put("code",c.getString(1)).put("package",c.getString(2)));}return rows;
   }
+  long diagnosticSequence(){try(Cursor c=getReadableDatabase().rawQuery("SELECT seq FROM sqlite_sequence WHERE name='diagnostics'",null)){return c.moveToFirst()?c.getLong(0):0;}}
   void clearDiagnostics(){getWritableDatabase().delete("diagnostics",null,null);putSetting("diagnostic_received","0");putSetting("diagnostic_saved","0");}
 
 }

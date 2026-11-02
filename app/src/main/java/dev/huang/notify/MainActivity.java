@@ -65,7 +65,8 @@ public final class MainActivity extends Activity {
       retention = "0",
       lastSaved = "0";
   private long[] counts = {0, 0, 0};
-  private boolean onlyToday = false, refreshing = false, resumed = false;
+  private boolean onlyToday = false, refreshing = false, resumed = false, onlyImages=false;
+  private String rangeStart="",rangeEnd="";
   private int limit = 80, generation;
   BackupScreen backupScreen;
   private final Runnable poll =
@@ -102,6 +103,7 @@ public final class MainActivity extends Activity {
       filterPkg = state.getString("pkg");
       filterName = state.getString("filter", "全部 App");
       onlyToday = state.getBoolean("today");
+      onlyImages=state.getBoolean("images");rangeStart=state.getString("range_start","");rangeEnd=state.getString("range_end","");
     }
     getWindow().setStatusBarColor(u.bg);
     getWindow().setNavigationBarColor(u.surface);
@@ -162,12 +164,15 @@ public final class MainActivity extends Activity {
     UpgradeManager.reconcile(this);
     UpdateChecker.schedule(this);
     updateFlow.resume();
+    backupScreen.resume();
+    Diagnostics.resume(this);
   }
 
   @Override
   protected void onPause() {
     resumed = false;
     updateFlow.pause();
+    backupScreen.pause();
     handler.removeCallbacks(poll);
     super.onPause();
   }
@@ -191,6 +196,7 @@ public final class MainActivity extends Activity {
     b.putString("pkg", filterPkg);
     b.putString("filter", filterName);
     b.putBoolean("today", onlyToday);
+    b.putBoolean("images",onlyImages);b.putString("range_start",rangeStart);b.putString("range_end",rangeEnd);
   }
 
   private void build() {
@@ -333,27 +339,16 @@ public final class MainActivity extends Activity {
     TextView appFilter = chip(filterName + " ▾", filterPkg != null);
     appFilter.setOnClickListener(v -> chooseApp());
     filters.addView(appFilter);
-    TextView timeFilter = chip(onlyToday ? "今天 ▾" : "所有日期 ▾", onlyToday);
+    TextView timeFilter = chip(onlyToday ? "今天 ▾" : rangeStart.isEmpty()?"所有日期 ▾":"自訂日期 ▾", onlyToday||!rangeStart.isEmpty());
+    appFilter.setMaxWidth(u.d(160));appFilter.setMaxLines(1);appFilter.setEllipsize(android.text.TextUtils.TruncateAt.END);
     LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(-2, -2);
     fp.setMargins(u.d(8), 0, 0, 0);
     filters.addView(timeFilter, fp);
-    timeFilter.setOnClickListener(
-        v ->
-            new AppDialog.Builder(this)
-                .setTitle("日期範圍")
-                .setSingleChoiceItems(
-                    new String[] {"所有日期", "今天"},
-                    onlyToday ? 1 : 0,
-                    (d, which) -> {
-                      onlyToday = which == 1;
-                      limit = 80;
-                      generation++;
-                      d.dismiss();
-                      build();
-                      refresh();
-                    })
-                .show());
-    header.addView(filters);
+    timeFilter.setOnClickListener(v->dateFilterDialog());header.addView(filters);u.gap(header,8);
+    LinearLayout extra=u.row();TextView imageFilter=chip(onlyImages?"有圖片 ✓":"只看有圖片",onlyImages);imageFilter.setOnClickListener(v->{onlyImages=!onlyImages;filtersChanged();});extra.addView(imageFilter);
+    TextView clearFilters=chip("清除篩選",false);LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-2,-2);cp.leftMargin=u.d(8);extra.addView(clearFilters,cp);
+    clearFilters.setOnClickListener(v->{onlyToday=false;onlyImages=false;rangeStart="";rangeEnd="";filterPkg=null;filterName="全部 App";query="";filtersChanged();});header.addView(extra);
+    if(!rangeStart.isEmpty()&&!onlyToday)header.addView(u.text(rangeStart+" ～ "+rangeEnd+" · 依首次保存日期",12,u.muted,false));
     u.gap(header, 18);
     sectionTitle = u.text(page.equals("favorites") ? "已收藏" : "最近紀錄", 14, u.muted, true);
     header.addView(sectionTitle);
@@ -485,13 +480,26 @@ public final class MainActivity extends Activity {
     starCount.setText(format(counts[2]));
   }
 
+  private void filtersChanged(){limit=80;generation++;build();refresh();}
+  void dateFilterDialog(){
+    LinearLayout body=dialogBody();body.addView(u.text("依首次保存日期篩選，包含開始與結束日期。",14,u.muted,false));
+    String today=java.time.LocalDate.now().toString();EditText start=edit("開始日期 YYYY-MM-DD"),end=edit("結束日期 YYYY-MM-DD");start.setText(rangeStart.isEmpty()?today:rangeStart);end.setText(rangeEnd.isEmpty()?today:rangeEnd);
+    start.setInputType(android.text.InputType.TYPE_CLASS_DATETIME|android.text.InputType.TYPE_DATETIME_VARIATION_DATE);end.setInputType(start.getInputType());
+    int[] selected={onlyToday?1:rangeStart.isEmpty()?0:2};AppDialog.Toggle[] options=new AppDialog.Toggle[3];String[] labels={"所有日期","今天","自訂日期"};
+    for(int i=0;i<3;i++){final int index=i;options[i]=new AppDialog.Toggle(this,true);options[i].setText(labels[i]);options[i].setChecked(selected[0]==i);body.addView(options[i]);options[i].setOnClickListener(v->{selected[0]=index;for(int j=0;j<3;j++)options[j].setChecked(j==index);start.setEnabled(index==2);end.setEnabled(index==2);});}
+    start.setEnabled(selected[0]==2);end.setEnabled(selected[0]==2);body.addView(start);body.addView(end);
+    AppDialog dialog=new AppDialog.Builder(this).setTitle("日期範圍").setView(body).setNegativeButton("取消",null).setPositiveButton("套用",null).create();
+    dialog.setOnShowListener(d->dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v->{String first=start.getText().toString().trim(),last=end.getText().toString().trim();if(selected[0]==2){try{RecordFilters.bounds(first,last,java.time.ZoneId.systemDefault());}catch(Exception e){end.setError(e instanceof java.time.DateTimeException?"日期不存在，請重新輸入":e.getMessage());return;}}onlyToday=selected[0]==1;rangeStart=selected[0]==2?first:"";rangeEnd=selected[0]==2?last:"";dialog.dismiss();filtersChanged();}));dialog.show();
+  }
+
   private void refresh() {
     updateHeader();
     if (refreshing || isFinishing() || isDestroyed()) return;
     refreshing = true;
     final int gen = generation;
     final String q = query, pkg = filterPkg;
-    final boolean fav = page.equals("favorites"), today = onlyToday;
+    final boolean fav = page.equals("favorites"), images=onlyImages;
+    String date=java.time.LocalDate.now().toString();long[] bounds=RecordFilters.bounds(onlyToday?date:rangeStart,onlyToday?date:rangeEnd,java.time.ZoneId.systemDefault());
     final int amount = limit;
     Store.IO.execute(
         () -> {
@@ -499,7 +507,7 @@ public final class MainActivity extends Activity {
             Store s = Store.get(this);
             long[] numbers = s.counts();
             List<String[]> sources = s.apps();
-            List<Record> records = s.list(q, pkg, fav, today, amount + 1);
+            List<Record> records = s.listFiltered(q,pkg,fav,bounds[0],bounds[1],images,amount+1);
             String p = s.setting("paused", "0"),
                 r = s.setting("retention", "0"),
                 last = s.setting("last_saved", "0");
@@ -530,7 +538,7 @@ public final class MainActivity extends Activity {
                     loadMore.setVisibility(more ? View.VISIBLE : View.GONE);
                     empty.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
                     empty.setText(
-                        !q.isEmpty() || pkg != null || today
+                        !q.isEmpty() || pkg != null || bounds[0]>=0 || images
                             ? "找不到符合條件的通知\n試試其他關鍵字或篩選條件。"
                             : fav
                                 ? "還沒有收藏\n打開一則通知，點選「加入收藏」。"
@@ -1128,13 +1136,7 @@ public final class MainActivity extends Activity {
       new AppDialog.Builder(this).setTitle("儲存概況").setMessage(text.toString()).setPositiveButton("完成",null).setNeutralButton("清除已保存圖片",(d,w)->clearImagesDialog()).show();
     });}catch(Exception e){runOnUiThread(()->toast("無法讀取圖片用量"));}});
   }
-  private void clearImagesDialog(){
-    LinearLayout body=u.column();body.addView(u.text("會清除通知與歷程中的圖片，文字及備註仍保留。你另存的圖片及外部備份不受影響；若需要圖片，請先建立備份。",14,u.muted,false));
-    AppDialog.Toggle include=new AppDialog.Toggle(this);include.setText("也清除收藏通知的圖片");body.addView(include);
-    new AppDialog.Builder(this).setTitle("清除已保存圖片？").setView(body).setNegativeButton("取消",null).setPositiveButton("確認清除",(d,w)->{
-      boolean favorites=include.isChecked();Store.IO.execute(()->{try{long freed=Store.get(this).clearImages(favorites);runOnUiThread(()->{refresh();toast("已清除圖片，釋出可重用空間 "+android.text.format.Formatter.formatFileSize(this,freed));});}catch(Exception e){runOnUiThread(()->toast("圖片清除失敗，請稍後重試"));}});
-    }).show();
-  }
+  private void clearImagesDialog(){ImageCleanupScreen.show(this,u,this::refresh);}
 
   private void privacyDialog() {
     new AppDialog.Builder(this)

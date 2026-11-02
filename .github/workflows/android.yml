@@ -61,9 +61,9 @@ jobs:
           ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :probe:assembleDebug
           cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/next.apk"
           cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk "$RUNNER_TEMP/upgrade-tests.apk"
-          git fetch --depth=1 origin tag v1.1.0
+          git fetch --depth=1 origin tag v1.2.0
           mkdir -p "$RUNNER_TEMP/huangnotify-previous"
-          git archive v1.1.0 | tar -x -C "$RUNNER_TEMP/huangnotify-previous"
+          git archive v1.2.0 | tar -x -C "$RUNNER_TEMP/huangnotify-previous"
           "$RUNNER_TEMP/huangnotify-previous/gradlew" -p "$RUNNER_TEMP/huangnotify-previous" :app:assembleDebug
           cp "$RUNNER_TEMP/huangnotify-previous/app/build/outputs/apk/debug/app-debug.apk" "$RUNNER_TEMP/previous.apk"
       - name: Enable KVM
@@ -110,3 +110,42 @@ jobs:
         with:
           name: self-update-cycle-api-${{ matrix.api }}
           path: upgrade-*
+
+  backup-performance:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[benchmark]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Prepare benchmark APKs
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: |
+            adb install app/build/outputs/apk/debug/app-debug.apk
+            adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            adb shell am instrument -w -e phase benchmark dev.huang.notify.test/dev.huang.notify.UpgradeHarness > backup-performance.txt
+            adb exec-out run-as dev.huang.notify cat files/backup-performance.json > backup-performance.json
+            grep -q 'INSTRUMENTATION_CODE: -1' backup-performance.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backup-performance-api-35
+          path: backup-performance.*
