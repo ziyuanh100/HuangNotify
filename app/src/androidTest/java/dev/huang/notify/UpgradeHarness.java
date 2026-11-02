@@ -9,8 +9,8 @@ import java.util.Locale;
 
 /** Separate CI instrumentation: real old-APK self update, process replacement, and reopen. */
 public final class UpgradeHarness extends android.test.InstrumentationTestRunner {
-  private String phase;
-  @Override public void onCreate(Bundle arguments) { phase=arguments.getString("phase",""); if (phase.isEmpty()) super.onCreate(arguments); else start(); }
+  private String phase,benchmarkKind;private int benchmarkSize;
+  @Override public void onCreate(Bundle arguments) { phase=arguments.getString("phase","");benchmarkKind=arguments.getString("benchmark_kind","");benchmarkSize=Integer.parseInt(arguments.getString("benchmark_size","0")); if (phase.isEmpty()) super.onCreate(arguments); else start(); }
   private boolean confirmInstall(android.view.accessibility.AccessibilityNodeInfo node) {
     CharSequence label=node.getText(), pkg=node.getPackageName();
     if(pkg!=null && pkg.toString().contains("packageinstaller") && label!=null
@@ -42,7 +42,7 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
       android.content.Context c=getTargetContext();
       if(phase.startsWith("interrupt-")){BackupProcessHarness.run(this,phase);return;}
       if(phase.equals("benchmark")) {
-        BackupBenchmark.run(c,message->{Bundle status=new Bundle();status.putString("benchmark_progress",message);sendStatus(0,status);});
+        BackupBenchmark.run(c,benchmarkKind,benchmarkSize,message->{Bundle status=new Bundle();status.putString("benchmark_progress",message);sendStatus(0,status);});
         Bundle report=new Bundle();report.putString("benchmark","PASS: completed paired baseline/new benchmark");finish(Activity.RESULT_OK,report);return;
       }
       if(phase.equals("before")) {

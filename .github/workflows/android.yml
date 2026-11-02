@@ -8,6 +8,7 @@ permissions:
   contents: read
 jobs:
   build:
+    if: "!contains(github.event.head_commit.message, '[performance-only]')"
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -40,6 +41,7 @@ jobs:
             app/build/reports/tests/
             app/build/reports/lint-results-debug.*
   device-tests:
+    if: "!contains(github.event.head_commit.message, '[performance-only]')"
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
@@ -79,10 +81,8 @@ jobs:
           disable-animations: true
           script: |
             adb install probe/build/outputs/apk/debug/probe-debug.apk
-            device_test_exit=0
-            ./gradlew :app:connectedDebugAndroidTest || device_test_exit=$?
+            ./gradlew :app:connectedDebugAndroidTest || { adb pull /data/local/tmp/huangnotify-ui-preview ui-preview || true; exit 1; }
             adb pull /data/local/tmp/huangnotify-ui-preview ui-preview || true
-            if [ "$device_test_exit" -ne 0 ]; then exit "$device_test_exit"; fi
             adb install -r "$RUNNER_TEMP/next.apk"
             adb install -r "$RUNNER_TEMP/upgrade-tests.apk"
             adb shell am instrument -w -e phase interrupt-before dev.huang.notify.test/dev.huang.notify.UpgradeHarness > backup-interrupt-before.txt
@@ -123,6 +123,20 @@ jobs:
             backup-interrupt-*
 
   backup-performance:
+    name: backup-performance (${{ matrix.kind }}-${{ matrix.size }})
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - { kind: text, size: 10 }
+          - { kind: text, size: 50 }
+          - { kind: text, size: 99 }
+          - { kind: images, size: 10 }
+          - { kind: images, size: 50 }
+          - { kind: images, size: 99 }
+          - { kind: many-short, size: 10 }
+          - { kind: fragmented, size: 10 }
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[benchmark]')
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -152,11 +166,11 @@ jobs:
           script: |
             adb install app/build/outputs/apk/debug/app-debug.apk
             adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-            adb shell am instrument -w -e phase benchmark dev.huang.notify.test/dev.huang.notify.UpgradeHarness | tee backup-performance.txt
+            timeout 45m adb shell am instrument -w -e phase benchmark -e benchmark_kind ${{ matrix.kind }} -e benchmark_size ${{ matrix.size }} dev.huang.notify.test/dev.huang.notify.UpgradeHarness | tee backup-performance.txt
             adb exec-out run-as dev.huang.notify cat files/backup-performance.json > backup-performance.json
             grep -q 'INSTRUMENTATION_CODE: -1' backup-performance.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: backup-performance-api-35
+          name: backup-performance-${{ matrix.kind }}-${{ matrix.size }}-api-35
           path: backup-performance.*

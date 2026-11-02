@@ -14,16 +14,19 @@ import org.json.*;
 final class BackupBenchmark {
   private static final char[] PASSWORD="benchmark-password-123".toCharArray();
   private static final Uri TREE=Uri.parse("content://dev.huang.notify.testdocs/tree/root");
-  static void run(Context c,java.util.function.Consumer<String> progress)throws Exception{
+  static void run(Context c,java.util.function.Consumer<String> progress)throws Exception{run(c,"",0,progress);}
+  static void run(Context c,String selectedKind,int selectedSize,java.util.function.Consumer<String> progress)throws Exception{
     JSONArray cases=new JSONArray();JSONObject root=new JSONObject().put("app_version",BuildConfig.VERSION_NAME).put("api",android.os.Build.VERSION.SDK_INT)
       .put("baseline_commit","527a0f18091d209fce11debee02d8d38be73ce18").put("warmups_per_mode",1).put("measured_runs_per_mode",5)
       .put("destination","private debug DocumentsProvider; local disk; no picker time").put("memory","sampled Java used heap and process PSS every 100 ms; not device-wide memory").put("cases",cases);
     File report=new File(c.getFilesDir(),"backup-performance.json");
+    write(report,root);
     try{
       for(String kind:new String[]{"text","images","many-short","fragmented"})for(int size:kind.equals("text")||kind.equals("images")?new int[]{10,50,99}:new int[]{10}){
+        if(!selectedKind.isEmpty()&&(!kind.equals(selectedKind)||size!=selectedSize))continue;
         progress.accept("Preparing "+kind+" "+size);seed(c,kind,size);long[] counts=Store.IO.submit(()->Store.get(c).counts()).get();long dbBytes=c.getDatabasePath("notifications.db").length();
         for(boolean encrypted:new boolean[]{false,true}){
-          JSONObject entry=new JSONObject().put("kind",kind).put("nominal_mib",size).put("encrypted",encrypted).put("records",counts[0]).put("database_bytes",dbBytes);JSONArray oldRuns=new JSONArray(),newRuns=new JSONArray();entry.put("old",oldRuns).put("new",newRuns);cases.put(entry);
+          JSONObject entry=new JSONObject().put("kind",kind).put("nominal_mib",size).put("encrypted",encrypted).put("records",counts[0]).put("database_bytes",dbBytes);JSONArray oldRuns=new JSONArray(),newRuns=new JSONArray();entry.put("old",oldRuns).put("new",newRuns);cases.put(entry);write(report,root);
           JSONObject oldWarm=measure(c,true,encrypted),newWarm=measure(c,false,encrypted);entry.put("first_old",oldWarm).put("first_new",newWarm);
           for(int trial=0;trial<5;trial++){
             progress.accept(kind+" "+size+" MiB "+(encrypted?"encrypted":"plain")+" paired "+(trial+1)+"/5");
@@ -34,7 +37,7 @@ final class BackupBenchmark {
           entry.put("target_met",size>=50&&encrypted?improvement>=30:after<=before*1.1);write(report,root);
         }
       }
-      root.put("completed",true);write(report,root);
+      if(cases.length()==0)throw new IllegalArgumentException("No benchmark case matched");root.put("completed",true);write(report,root);
     }finally{Store.IO.submit(()->{Store s=Store.get(c);s.getWritableDatabase().delete("records",null,null);s.pruneImages();}).get();}
   }
   private static void write(File report,JSONObject root)throws Exception{try(Writer w=new OutputStreamWriter(new FileOutputStream(report),java.nio.charset.StandardCharsets.UTF_8)){w.write(root.toString(2));}}
