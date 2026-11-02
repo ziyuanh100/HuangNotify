@@ -11,4 +11,14 @@
 
 圖片每則 4 張、每張 256 KiB、1440 px 限制不變。無法記錄來源未發出、系統未送達或未授權的內容；Samsung A55 截圖漏記仍須實機診斷，不宣稱本版已修復。大型備份需要足夠私有暫存空間。畫面重建或程序終止後請重新操作備份；外部提供者卡住時取消可能延後。
 
-驗證與 APK 來源將在通過後補入。
+## 驗證與建置來源
+
+公開 APK 來源：`527a0f18091d209fce11debee02d8d38be73ce18`；[CI 41457178917](https://github.com/ziyuanh100/HuangNotify/actions/runs/41457178917)，所有 job 完成且成功。
+
+JVM 14 項，Android 8／15／16 各 88 項裝置測試通過，共 278 項；另三個 API 的 1.1.0 → 1.2.0 真實 APK 自我升級、資料保留、DB v2 → v3、完成提示與重新開啟均通過。Debug／Release 編譯與 Lint 通過（0 errors、8 warnings）。
+
+測試包含 64 MiB JVM heap 下 100 MiB 加解密、超限與取消；三個 Android API 均完成超過 99 MiB 的真實 JSON／加密／staging／SQLite 還原、舊格式相容、損壞輸入與衝突回滾、圖片清理／補回、本機診斷與選檔取消。詳見 [測試紀錄](TESTING.md)。
+
+公開 APK 固定 release 簽章通過 APK v2／v3 驗證；CI 安裝流程使用 runner 的 debug 簽章，不替代 Samsung、Play Protect 或跨廠牌實機驗收。
+
+APK SHA-256：`d91efba39f9c6d992fc3fa8eaa31bd2e15244c37a36be68340ecbdc6c118eb04`。
