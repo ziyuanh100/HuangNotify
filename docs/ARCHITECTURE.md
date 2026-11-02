@@ -86,3 +86,18 @@ writer 每段 64 KiB（最後一段可較短），100 MiB 檔案最多額外 32,
 `Diagnostics` 只接受處理狀態、時間與來源套件名稱，最多保留 200 筆，不寫入正文或通知 key。收到、重連補讀、暫停、排除、重複、群組摘要、成功與失敗分開呈現；無法觀察未送達 NotificationListenerService 的事件。停用會清除，匯出須使用者主動確認，不包含在通知備份。
 
 清除圖片在同一交易更新 current／history 的 `cleared` 狀態及指紋、移除引用、回收孤立 blob。預設略過收藏；共用圖片仍被收藏引用時會保留。沒有自動 VACUUM，實體檔案可能保留可重用空間。
+
+
+## 1.3.0 備份路徑與操作延續
+
+- `BackupStreamCrypto.Encoder` 接受 push 寫入，維持 HNBK2 64 KiB frame、nonce／AAD、固定 KDF 與驗證末尾；flush 不會提早產生短 frame。每份檔案重用 Cipher 並以新 nonce 重新初始化，不重用 key／nonce 組合。
+- JSON 經有界 BufferedWriter 直接送至加密輸出，檔案生成時用 DigestOutputStream 計算最終容器的 SHA-256。Session 保存 digest 及長度；儲存仍關閉輸出並讀回比對，可偵測準備後的私有檔案被修改。自動備份沿用同一路徑，只在驗證成功後清理舊檔。
+- Archive 使用 records、versions、目前圖片引用與歷程圖片引用四個有序游標，依 record_id／time／rowid 對齊，不在 Java 載入整份通知或建立全域引用 Map；歷程同時間順序保持一致。
+- `BackupOperation` 只持 Application Context，畫面觀察者為弱參考。狀態與私有 Session 由 App 程序持有；旋轉後新的 BackupScreen 重新接上，舊畫面不取消作業。選檔已啟動旗標、解鎖／還原預覽及還原設定也保留。
+- 暫停使用者等待期間的操作時計，進度顯示實際處理階段、已用時間與可計算的處理量。取消中的外部讀寫尚未返回時不提早宣告完成；提交已成功則如實顯示完成。
+- pending 識別碼只用來在程序終止後提示重新操作，不保存手動密碼。Session 登記存活目錄，恢復清理僅移除沒有目前擁有者的 `op_UUID` 目錄；現行自動／手動作業及其他檔案受保護。
+- 格式、100 MiB 上限、舊備份還原與 DB schema v3 維持相容，沒有新增權限或執行期依賴。效能測試的 1.2.0 archive／files／crypto 原始碼副本只在 androidTest APK，正式 APK 不包含。
+
+日期區間以首次保存時間與本機時區計算 `[開始日零時, 結束日次日零時)`，支援夏令時間；圖片篩選檢查目前及歷程引用。清理預覽分別計算受影響通知、唯一圖片及沒有受保護引用的 blob bytes，實際清理仍在交易內重新依目前資料執行。
+
+診斷匯出格式版本為 2，新增本機處理序號及 sequence，供本次測試判斷 200 筆截斷；這與備份 JSON v3 無關。診斷停用與清除在同一交易，失敗回滾；測試與篩選偏好一起清除。診斷變更失敗會回報且不讓例外中斷通知 IO executor。

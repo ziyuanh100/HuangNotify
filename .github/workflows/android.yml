@@ -79,8 +79,10 @@ jobs:
           disable-animations: true
           script: |
             adb install probe/build/outputs/apk/debug/probe-debug.apk
-            ./gradlew :app:connectedDebugAndroidTest
-            adb pull /data/local/tmp/huangnotify-ui-preview ui-preview
+            device_test_exit=0
+            ./gradlew :app:connectedDebugAndroidTest || device_test_exit=$?
+            adb pull /data/local/tmp/huangnotify-ui-preview ui-preview || true
+            if [ "$device_test_exit" -ne 0 ]; then exit "$device_test_exit"; fi
             adb install -r "$RUNNER_TEMP/next.apk"
             adb install -r "$RUNNER_TEMP/upgrade-tests.apk"
             adb shell am instrument -w -e phase interrupt-before dev.huang.notify.test/dev.huang.notify.UpgradeHarness > backup-interrupt-before.txt

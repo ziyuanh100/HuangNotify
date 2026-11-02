@@ -47,9 +47,13 @@ public class ImageUiTest extends ActivityInstrumentationTestCase2<MainActivity> 
     capture("image-gallery.png");
     Instrumentation.ActivityMonitor monitor=getInstrumentation().addMonitor(ImageViewerActivity.class.getName(),null,false);
     try {
-      AccessibilityNodeInfo root=getInstrumentation().getUiAutomation().getRootInActiveWindow(); boolean clicked=false;
-      for(AccessibilityNodeInfo node:root.findAccessibilityNodeInfosByText("查看圖片 1"))if(node.isVisibleToUser() && node.isClickable()) {clicked=node.performAction(AccessibilityNodeInfo.ACTION_CLICK); if(clicked)break;}
-      assertTrue("Image preview action missing",clicked); viewer=(ImageViewerActivity)getInstrumentation().waitForMonitorWithTimeout(monitor,5000); assertNotNull(viewer); awaitImage();
+      getInstrumentation().runOnMainSync(()->preview.requestRectangleOnScreen(new android.graphics.Rect(0,0,preview.getWidth(),preview.getHeight()),true));
+      boolean clicked=false;long actionDeadline=SystemClock.elapsedRealtime()+8000;
+      while(!clicked&&SystemClock.elapsedRealtime()<actionDeadline){getInstrumentation().waitForIdleSync();AccessibilityNodeInfo root=getInstrumentation().getUiAutomation().getRootInActiveWindow();
+        if(root!=null)for(AccessibilityNodeInfo node:root.findAccessibilityNodeInfosByText("查看圖片 1"))if(node.isVisibleToUser()&&node.isClickable()){clicked=node.performAction(AccessibilityNodeInfo.ACTION_CLICK);if(clicked)break;}
+        if(!clicked)SystemClock.sleep(50);
+      }
+      assertTrue("Image preview action missing after scroll and accessibility update",clicked); viewer=(ImageViewerActivity)getInstrumentation().waitForMonitorWithTimeout(monitor,5000); assertNotNull(viewer); awaitImage();
     } finally {getInstrumentation().removeMonitor(monitor);}
     getInstrumentation().runOnMainSync(()->find(viewer.getWindow().getDecorView(),"放大").performClick());
     getInstrumentation().runOnMainSync(()->find(viewer.getWindow().getDecorView(),"重設").performClick()); capture("image-viewer.png");

@@ -46,7 +46,7 @@ final class Diagnostics {
     void open(){
       LinearLayout body=u.column();body.setBackgroundColor(u.surface);status=u.text("正在讀取狀態…",14,u.ink,false);body.addView(status);u.gap(body,12);
       enabled=new AppDialog.Toggle(a);enabled.setText("保留最近 200 筆本機診斷");enabled.setEnabled(false);body.addView(enabled);
-      enabled.setOnClickListener(v->{enabled.toggle();boolean value=enabled.isChecked();enabled.setEnabled(false);if(!value)prefs.edit().remove("started").remove("ended").remove("sequence").apply();Store.IO.execute(()->{try{Store s=Store.get(a);s.putSetting("diagnostics",value?"1":"0");if(!value)s.clearDiagnostics();a.runOnUiThread(this::refresh);}catch(Exception error){a.runOnUiThread(()->{toast("無法儲存診斷設定，請檢查手機空間後重試");refresh();});}});});
+      enabled.setOnClickListener(v->{enabled.toggle();boolean value=enabled.isChecked();enabled.setEnabled(false);Store.IO.execute(()->{try{Store s=Store.get(a);android.database.sqlite.SQLiteDatabase db=s.getWritableDatabase();db.beginTransaction();try{s.putSetting("diagnostics",value?"1":"0");if(!value)s.clearDiagnostics();db.setTransactionSuccessful();}finally{db.endTransaction();}a.runOnUiThread(()->{if(!value){prefs.edit().clear().apply();pkg="";window=0;result=0;}refresh();});}catch(Exception error){a.runOnUiThread(()->{toast("無法儲存診斷設定，請檢查手機空間後重試");refresh();});}});});
       body.addView(u.text("只記錄時間、處理序號、來源套件與狀態，不包含通知標題、內文、圖片或通知識別碼。關閉會清除紀錄。",12,u.muted,false));
       testButton=button(body,"開始通知測試",this::test);
       body.addView(u.text("開始測試後，請自行截圖或讓來源 App 發出通知；回到這裡會重新整理，也可手動重新整理。若沒有送達事件，不能直接判定來源沒有發通知。",12,u.muted,false));
@@ -55,7 +55,7 @@ final class Diagnostics {
       button(body,"重新整理",this::refresh);button(body,"重新連線通知服務",()->{try{android.service.notification.NotificationListenerService.requestRebind(new ComponentName(a,CaptureService.class));toast("已要求重新連線，請稍後重新整理實際狀態");}catch(Exception e){toast("請先開啟通知存取權");}});
       button(body,"檢查來源與權限",()->new AppDialog.Builder(a).setTitle("漏記排查").setMessage("先確認上方通知存取權與連線狀態。若結果為暫停或排除，請回到設定開啟記錄或調整來源。若完全未觀察到送達事件，請確認來源 App 的系統通知設定與手機省電限制；浮動工具列可能沒有通知事件。Samsung 截圖仍需依實際結果判斷。").setPositiveButton("了解",null).show());
       events=u.text("",12,u.muted,false);body.addView(events);ScrollView scroll=new ScrollView(a);scroll.addView(body);
-      dialog=new AppDialog.Builder(a).setTitle("通知診斷").setExpandedView(scroll).setPositiveButton("完成",null).setNeutralButton("匯出診斷",(d,w)->exportDialog(a)).setNegativeButton("清除診斷",(d,w)->{prefs.edit().remove("started").remove("ended").remove("sequence").apply();Store.IO.execute(()->{try{Store.get(a).clearDiagnostics();}catch(Exception error){a.runOnUiThread(()->toast("診斷清除失敗，請稍後重試"));}});}).show();refresh();
+      dialog=new AppDialog.Builder(a).setTitle("通知診斷").setExpandedView(scroll).setPositiveButton("完成",null).setNeutralButton("匯出診斷",(d,w)->exportDialog(a)).setNegativeButton("清除診斷",(d,w)->{prefs.edit().clear().apply();Store.IO.execute(()->{try{Store.get(a).clearDiagnostics();}catch(Exception error){a.runOnUiThread(()->toast("診斷清除失敗，請稍後重試"));}});}).show();refresh();
     }
     TextView button(LinearLayout parent,String label,Runnable action){TextView b=u.button(label,false);parent.addView(b);u.gap(parent,6);b.setOnClickListener(v->action.run());return b;}
     void toast(String text){if(!a.isDestroyed())Toast.makeText(a,text,Toast.LENGTH_LONG).show();}
