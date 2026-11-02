@@ -105,7 +105,7 @@ public class CaptureFlowTest extends InstrumentationTestCase {
     String request=UUID.randomUUID().toString();java.util.concurrent.CountDownLatch completed=new java.util.concurrent.CountDownLatch(1);
     android.content.BroadcastReceiver receiver=new android.content.BroadcastReceiver(){@Override public void onReceive(Context context,android.content.Intent result){if(request.equals(result.getStringExtra("request")))completed.countDown();}};
     android.content.IntentFilter filter=new android.content.IntentFilter("dev.huang.notify.probe.COMPLETE");
-    if(Build.VERSION.SDK_INT>=33)c.registerReceiver(receiver,filter,Context.RECEIVER_EXPORTED);else c.registerReceiver(receiver,filter);
+    c.registerReceiver(receiver,filter,Context.RECEIVER_EXPORTED);
     android.content.Intent intent=new android.content.Intent().setClassName(PROBE,PROBE+".ProbeActivity")
         .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("id",notificationId).putExtra("cancel",cancel).putExtra("kind",kind).putExtra("request",request);
     try{c.startActivity(intent);assertTrue("Probe did not acknowledge "+(cancel?"cancellation":"posting"),completed.await(10,TimeUnit.SECONDS));}
