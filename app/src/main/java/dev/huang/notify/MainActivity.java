@@ -485,9 +485,10 @@ public final class MainActivity extends Activity {
     LinearLayout body=dialogBody();body.addView(u.text("依首次保存日期篩選，包含開始與結束日期。",14,u.muted,false));
     String today=java.time.LocalDate.now().toString();EditText start=edit("開始日期 YYYY-MM-DD"),end=edit("結束日期 YYYY-MM-DD");start.setText(rangeStart.isEmpty()?today:rangeStart);end.setText(rangeEnd.isEmpty()?today:rangeEnd);
     start.setInputType(android.text.InputType.TYPE_CLASS_DATETIME|android.text.InputType.TYPE_DATETIME_VARIATION_DATE);end.setInputType(start.getInputType());
-    int[] selected={onlyToday?1:rangeStart.isEmpty()?0:2};AppDialog.Toggle[] options=new AppDialog.Toggle[3];String[] labels={"所有日期","今天","自訂日期"};
-    for(int i=0;i<3;i++){final int index=i;options[i]=new AppDialog.Toggle(this,true);options[i].setText(labels[i]);options[i].setChecked(selected[0]==i);body.addView(options[i]);options[i].setOnClickListener(v->{selected[0]=index;for(int j=0;j<3;j++)options[j].setChecked(j==index);start.setEnabled(index==2);end.setEnabled(index==2);});}
-    start.setEnabled(selected[0]==2);end.setEnabled(selected[0]==2);body.addView(start);body.addView(end);
+    LinearLayout dates=u.column();dates.addView(u.text("開始日期",13,u.muted,false));dates.addView(start);u.gap(dates,8);dates.addView(u.text("結束日期",13,u.muted,false));dates.addView(end);
+    int[] selected={onlyToday?1:rangeStart.isEmpty()?0:2};dates.setVisibility(selected[0]==2?View.VISIBLE:View.GONE);AppDialog.Toggle[] options=new AppDialog.Toggle[3];String[] labels={"所有日期","今天","自訂日期"};
+    for(int i=0;i<3;i++){final int index=i;options[i]=new AppDialog.Toggle(this,true);options[i].setText(labels[i]);options[i].setChecked(selected[0]==i);body.addView(options[i]);options[i].setOnClickListener(v->{selected[0]=index;for(int j=0;j<3;j++)options[j].setChecked(j==index);start.setEnabled(index==2);end.setEnabled(index==2);dates.setVisibility(index==2?View.VISIBLE:View.GONE);});}
+    start.setEnabled(selected[0]==2);end.setEnabled(selected[0]==2);body.addView(dates);
     AppDialog dialog=new AppDialog.Builder(this).setTitle("日期範圍").setView(body).setNegativeButton("取消",null).setPositiveButton("套用",null).create();
     dialog.setOnShowListener(d->dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v->{String first=start.getText().toString().trim(),last=end.getText().toString().trim();if(selected[0]==2){try{RecordFilters.bounds(first,last,java.time.ZoneId.systemDefault());}catch(Exception e){end.setError(e instanceof java.time.DateTimeException?"日期不存在，請重新輸入":e.getMessage());return;}}onlyToday=selected[0]==1;rangeStart=selected[0]==2?first:"";rangeEnd=selected[0]==2?last:"";dialog.dismiss();filtersChanged();}));dialog.show();
   }

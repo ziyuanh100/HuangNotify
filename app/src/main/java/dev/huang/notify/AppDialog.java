@@ -26,6 +26,7 @@ public final class AppDialog extends Dialog {
   private static final WeakHashMap<Context, List<AppDialog>> OPEN = new WeakHashMap<>();
   private final Builder spec;
   private final Ui u;
+  private boolean horizontalActions;
   private final android.util.SparseArray<TextView> buttons = new android.util.SparseArray<>();
   private AppDialog(Builder spec) { super(spec.context); this.spec = spec; u = new Ui(spec.context); }
   static boolean hasOpen(Context context) {
@@ -80,7 +81,8 @@ public final class AppDialog extends Dialog {
     }
     if (spec.positive == null && spec.negative == null && spec.neutral == null) spec.negative = "關閉";
     u.gap(card, 14);
-    LinearLayout actions=spec.expanded?u.row():card;
+    horizontalActions=spec.expanded&&getContext().getResources().getConfiguration().fontScale<1.6f;
+    LinearLayout actions=spec.expanded?(horizontalActions?u.row():u.column()):card;
     if(spec.expanded) card.addView(actions,new LinearLayout.LayoutParams(-1,-2));
     action(actions, BUTTON_POSITIVE, spec.positive, spec.positiveListener, true);
     action(actions, BUTTON_NEUTRAL, spec.neutral, spec.neutralListener, false);
@@ -123,9 +125,9 @@ public final class AppDialog extends Dialog {
       button.setTextColor(u.dark ? 0xff35100e : Color.WHITE);
     }
     button.setOnClickListener(v -> { dismiss(); if (listener != null) listener.onClick(this, which); });
-    LinearLayout.LayoutParams params=spec.expanded?new LinearLayout.LayoutParams(0,-2,1):new LinearLayout.LayoutParams(-1,-2);
-    if(spec.expanded) params.setMargins(u.d(2),0,u.d(2),0);
-    body.addView(button,params); if(!spec.expanded) u.gap(body,8); buttons.put(which,button);
+    LinearLayout.LayoutParams params=horizontalActions?new LinearLayout.LayoutParams(0,-2,1):new LinearLayout.LayoutParams(-1,-2);
+    if(horizontalActions) params.setMargins(u.d(2),0,u.d(2),0);
+    body.addView(button,params); if(!horizontalActions) u.gap(body,8); buttons.put(which,button);
   }
   public TextView getButton(int which) { return buttons.get(which); }
 
@@ -153,6 +155,7 @@ public final class AppDialog extends Dialog {
   /** Custom checkable card with native accessibility semantics. */
   public static final class Toggle extends LinearLayout implements Checkable {
     private final Ui u;
+  private boolean horizontalActions;
     private final TextView label, mark;
     private boolean checked;
     private final boolean radio;
@@ -164,7 +167,8 @@ public final class AppDialog extends Dialog {
       label = u.text("", 15, u.ink, false); label.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
       addView(label, new LayoutParams(0, -2, 1));
       mark = u.text("", 20, u.accent, true); mark.setGravity(Gravity.CENTER); mark.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
-      addView(mark, new LayoutParams(u.d(32), u.d(32)));
+      int markSide=u.d(Math.max(32,28*getResources().getConfiguration().fontScale));mark.setMinHeight(markSide);
+      addView(mark, new LayoutParams(markSide, -2));
       setOnClickListener(v -> toggle()); setChecked(false);
     }
     public void setText(String text) { label.setText(text); setContentDescription(text); }
