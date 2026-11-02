@@ -44,13 +44,18 @@ public class ImageUiTest extends ActivityInstrumentationTestCase2<MainActivity> 
     @SuppressWarnings("unchecked") Map<android.content.Context,List<AppDialog>> dialogs=(Map<android.content.Context,List<AppDialog>>)open.get(null);
     AppDialog shown=dialogs.get(main).get(dialogs.get(main).size()-1);
     ImageView preview=preview(shown.getWindow().getDecorView()); assertNotNull(preview); assertNotNull("Thumbnail must actually render a bitmap",preview.getDrawable());
-    capture("image-gallery.png");
+    AccessibilityNodeInfo active=getInstrumentation().getUiAutomation().getRootInActiveWindow();
+    if(active!=null && ((UpgradeHarness)getInstrumentation()).closeQuickstepAnr(active))getInstrumentation().waitForIdleSync();
     Instrumentation.ActivityMonitor monitor=getInstrumentation().addMonitor(ImageViewerActivity.class.getName(),null,false);
     try {
       getInstrumentation().runOnMainSync(()->preview.requestRectangleOnScreen(new android.graphics.Rect(0,0,preview.getWidth(),preview.getHeight()),true));
       boolean clicked=false;long actionDeadline=SystemClock.elapsedRealtime()+8000;
       while(!clicked&&SystemClock.elapsedRealtime()<actionDeadline){getInstrumentation().waitForIdleSync();AccessibilityNodeInfo root=getInstrumentation().getUiAutomation().getRootInActiveWindow();
-        if(root!=null)for(AccessibilityNodeInfo node:root.findAccessibilityNodeInfosByText("查看圖片 1"))if(node.isVisibleToUser()&&node.isClickable()){clicked=node.performAction(AccessibilityNodeInfo.ACTION_CLICK);if(clicked)break;}
+        if(root!=null){
+          if(((UpgradeHarness)getInstrumentation()).closeQuickstepAnr(root)){SystemClock.sleep(100);continue;}
+          capture("image-gallery.png");
+          for(AccessibilityNodeInfo node:root.findAccessibilityNodeInfosByText("查看圖片 1"))if(node.isVisibleToUser()&&node.isClickable()){clicked=node.performAction(AccessibilityNodeInfo.ACTION_CLICK);if(clicked)break;}
+        }
         if(!clicked)SystemClock.sleep(50);
       }
       assertTrue("Image preview action missing after scroll and accessibility update",clicked); viewer=(ImageViewerActivity)getInstrumentation().waitForMonitorWithTimeout(monitor,5000); assertNotNull(viewer); awaitImage();

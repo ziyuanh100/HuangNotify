@@ -18,19 +18,19 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
         && node.isEnabled() && node.isClickable()) return node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK);
     for(int i=0;i<node.getChildCount();i++) {
       android.view.accessibility.AccessibilityNodeInfo child=node.getChild(i);
-      if(child!=null && confirmInstall(child)) return true;
+   if(child!=null && confirmInstall(child)) return true;
     }
     return false;
   }
   /** CI emulator recovery only: never dismiss an ANR belonging to the app under test. */
-  private boolean closeQuickstepAnr(android.view.accessibility.AccessibilityNodeInfo root) {
+  boolean closeQuickstepAnr(android.view.accessibility.AccessibilityNodeInfo root) {
     boolean quickstep=false;
     for(android.view.accessibility.AccessibilityNodeInfo title:root.findAccessibilityNodeInfosByViewId("android:id/alertTitle"))
       if("Quickstep isn't responding".contentEquals(title.getText()==null?"":title.getText())) quickstep=true;
     if(!quickstep) return false;
     for(android.view.accessibility.AccessibilityNodeInfo button:root.findAccessibilityNodeInfosByViewId("android:id/aerr_close"))
       if("android".contentEquals(button.getPackageName()==null?"":button.getPackageName()) && button.isEnabled() && button.isClickable()) {
-        Bundle diagnostic=new Bundle(); diagnostic.putString("emulator_recovery","Quickstep launcher ANR obscured installer; closing that launcher only"); sendStatus(0,diagnostic);
+        Bundle diagnostic=new Bundle(); diagnostic.putString("emulator_recovery","Quickstep launcher ANR obscured UI; closing that launcher only"); sendStatus(0,diagnostic);
         return button.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK);
       }
     return false;
