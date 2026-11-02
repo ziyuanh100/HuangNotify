@@ -75,7 +75,7 @@ assert apk_sha=="ea50641f09d6ffa2142300c279b633f245882c6ab520204df5efa73b10fe1cd
 apk=ROOT/"HuangNotify-v1.3.0.apk"; apk.write_bytes(old)
 unsigned=member(archive(fa["HuangNotify-unsigned-release-apk"]),"app-release-unsigned.apk")
 za=zipfile.ZipFile(io.BytesIO(old)); zb=zipfile.ZipFile(io.BytesIO(unsigned))
-assert set(za.namelist())==set(zb.namelist()),"APK payload file set changed"
+assert set(za.namelist())==set(zb.namelist()),{"only_signed":sorted(set(za.namelist())-set(zb.namelist())),"only_unsigned":sorted(set(zb.namelist())-set(za.namelist()))}
 provenance="META-INF/version-control-info.textproto"
 assert b"0c65e5d3124bc4cef3b37833bf553e2ff04a1989" in za.read(provenance)
 assert b"ad4cf5983af12cd540cbbcfc87a9ecd5c0256007" in zb.read(provenance)
