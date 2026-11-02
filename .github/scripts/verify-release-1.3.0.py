@@ -12,7 +12,7 @@ class Redirect(urllib.request.HTTPRedirectHandler):
 opener=urllib.request.build_opener(Redirect())
 def request(url,binary=False):
     assert url.startswith(BASE+"/")
-    req=urllib.request.Request(url,headers={"Authorization":"Bearer "+TOKEN,"Accept":"application/octet-stream" if binary else "application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"})
+    req=urllib.request.Request(url,headers={"Authorization":"Bearer "+TOKEN,"Accept":"application/octet-stream" if "/releases/assets/" in url and binary else "application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"})
     with opener.open(req,timeout=90) as r: data=r.read()
     return data if binary else json.loads(data)
 def artifacts(run):
