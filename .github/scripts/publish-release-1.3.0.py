@@ -3,7 +3,8 @@ REPO="ziyuanh100/HuangNotify"; BASE="https://api.github.com/repos/"+REPO
 TOKEN=os.environ["GH_TOKEN"]; RELEASE=431622320
 APK_SHA="ea50641f09d6ffa2142300c279b633f245882c6ab520204df5efa73b10fe1cd4"
 SOURCE="0c65e5d3124bc4cef3b37833bf553e2ff04a1989"
-TAG_SOURCE="ad4cf5983af12cd540cbbcfc87a9ecd5c0256007"
+FUNCTIONAL_SOURCE="ad4cf5983af12cd540cbbcfc87a9ecd5c0256007"
+TAG_SOURCE=os.environ["GITHUB_SHA"]
 ARTIFACT_ID=13156469791
 ARTIFACT_DIGEST="sha256:48b3dae64104f8717923350fccb1024520dad88482faa8a625b79c92fc18e624"
 class Redirect(urllib.request.HTTPRedirectHandler):
@@ -17,7 +18,11 @@ def api(path,method="GET",payload=None):
     url=BASE+path
     data=None if payload is None else json.dumps(payload).encode()
     req=urllib.request.Request(url,data=data,method=method,headers={"Authorization":"Bearer "+TOKEN,"Accept":"application/vnd.github+json","Content-Type":"application/json","X-GitHub-Api-Version":"2022-11-28"})
-    with opener.open(req,timeout=90) as r:body=r.read()
+    try:
+        with opener.open(req,timeout=90) as r:body=r.read()
+    except urllib.error.HTTPError as error:
+        print("GitHub API error:",method,path,error.code,error.read().decode()[:2000],flush=True)
+        raise
     return json.loads(body) if body else None
 def binary(url):
     assert url.startswith(BASE+"/actions/artifacts/")
@@ -34,12 +39,16 @@ def member(name):
 apk=member("HuangNotify-v1.3.0.apk");assert hashlib.sha256(apk).hexdigest()==APK_SHA
 validation=json.loads(member("validation-1.3.0.json"))
 assert validation["apk_payload_matches_final_test_build"] is True
-assert validation["apk_sha256"]==APK_SHA and validation["apk_source"]==SOURCE and validation["functional_source"]==TAG_SOURCE
+assert validation["apk_sha256"]==APK_SHA and validation["apk_source"]==SOURCE and validation["functional_source"]==FUNCTIONAL_SOURCE
 assert validation["performance_cases_completed"]==16 and validation["performance_all_targets_met"] is True
 body=pathlib.Path("docs/RELEASE-1.3.0.md").read_text()
 assert "__" not in body and "尚待發布" not in body and "313" in body
 release=api("/releases/"+str(RELEASE))
 assert release["tag_name"] in ("unpublished-1.3.0-0c65","v1.3.0")
+if not release["draft"]:TAG_SOURCE=api("/git/ref/tags/v1.3.0")["object"]["sha"]
+comparison=api("/compare/"+FUNCTIONAL_SOURCE+"..."+TAG_SOURCE)
+assert comparison["status"] in ("ahead","identical")
+assert all(f["filename"].startswith((".github/","docs/","app/src/androidTest/","app/src/test/")) or f["filename"]=="README.md" for f in comparison.get("files",[])),"Production source changed after functional verification"
 if release["draft"]:
     try:
         tag=api("/git/ref/tags/v1.3.0");assert tag["object"]["sha"]==TAG_SOURCE

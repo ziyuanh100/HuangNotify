@@ -38,7 +38,7 @@
 
 ## APK 與來源
 
-正式標籤使用功能測試提交 `ad4cf5983af12cd540cbbcfc87a9ecd5c0256007`；已簽署 APK 建置來源為 `0c65e5d3124bc4cef3b37833bf553e2ff04a1989`。後續只有測試／CI 變更，發布驗證逐項比較 APK 與最終測試提交的未簽章 Release：除 JAR 簽章資料及建置來源紀錄 `META-INF/version-control-info.textproto` 外，程式、Manifest、資源及其他檔案完全相同。沿用已簽署檔案，沒有修改或重新簽署其內容。
+功能測試提交為 `ad4cf5983af12cd540cbbcfc87a9ecd5c0256007`；正式標籤還包含後續測試、文件及發布流程，發布前另確認沒有正式程式變更。已簽署 APK 建置來源為 `0c65e5d3124bc4cef3b37833bf553e2ff04a1989`。後續只有測試／CI 變更，發布驗證逐項比較 APK 與最終測試提交的未簽章 Release：除 JAR 簽章資料及建置來源紀錄 `META-INF/version-control-info.textproto` 外，程式、Manifest、資源及其他檔案完全相同。沿用已簽署檔案，沒有修改或重新簽署其內容。
 
 - APK SHA-256：`ea50641f09d6ffa2142300c279b633f245882c6ab520204df5efa73b10fe1cd4`
 - 固定憑證 SHA-256：`da461b9da7d07aaf0305ad9e4f57fbd4f0d1f3e6b03be7f9d4c7f3eb6467c5e5`
