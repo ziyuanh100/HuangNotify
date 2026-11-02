@@ -1,0 +1,394 @@
+{
+  "validation": {
+    "jvm": {
+      "tests": 16,
+      "failures": 0
+    },
+    "android": {
+      "26": {
+        "tests": 99,
+        "failures": 0
+      },
+      "35": {
+        "tests": 99,
+        "failures": 0
+      },
+      "36": {
+        "tests": 99,
+        "failures": 0
+      }
+    },
+    "upgrade_cycles_passed": 3,
+    "process_interruption_cycles_passed": 3,
+    "functional_run": 41475172663,
+    "functional_source": "ad4cf5983af12cd540cbbcfc87a9ecd5c0256007",
+    "apk_source": "0c65e5d3124bc4cef3b37833bf553e2ff04a1989",
+    "apk_sha256": "ea50641f09d6ffa2142300c279b633f245882c6ab520204df5efa73b10fe1cd4",
+    "certificate_sha256": "da461b9da7d07aaf0305ad9e4f57fbd4f0d1f3e6b03be7f9d4c7f3eb6467c5e5",
+    "apk_payload_matches_final_test_build": true,
+    "only_payload_difference": "META-INF/version-control-info.textproto",
+    "excluded_jar_signing_entries": [
+      "META-INF/HUANGNOT.RSA",
+      "META-INF/HUANGNOT.SF",
+      "META-INF/MANIFEST.MF"
+    ],
+    "performance_cases_completed": 16,
+    "performance_all_targets_met": true,
+    "performance_artifacts": [
+      {
+        "name": "backup-performance-text-10-api-35",
+        "id": 13155278010,
+        "digest": "sha256:2ef449185a7bab13868156a25438b0cd22eb64233382611f727d77e271cc0577",
+        "run": 41471929501
+      },
+      {
+        "name": "backup-performance-text-50-api-35",
+        "id": 13156750749,
+        "digest": "sha256:b3747f7b051e12b8626bc35d79913da55b9658787ac32fa9b2b088a18058b832",
+        "run": 41471929501
+      },
+      {
+        "name": "backup-performance-text-99-api-35",
+        "id": 13157345143,
+        "digest": "sha256:b863ab0f43e8b2f956cf5b7e47b040d7f91c22ea3d2c17589ae063490260f1c1",
+        "run": 41471929501
+      },
+      {
+        "name": "backup-performance-images-50-api-35",
+        "id": 13157021287,
+        "digest": "sha256:b833029fdd96b6779ae1f49d1fb1b32e347f3763d0b6c6fb1b890eb785540a72",
+        "run": 41471929501
+      },
+      {
+        "name": "backup-performance-images-99-api-35",
+        "id": 13157671770,
+        "digest": "sha256:126b1c43fb32f194b1dd399b79d85ef736ffa5caa05488346775b1de93196042",
+        "run": 41471929501
+      },
+      {
+        "name": "backup-performance-many-short-10-api-35",
+        "id": 13154289833,
+        "digest": "sha256:f29fed3045b647d163321c5c360e8ff814c71fbe1f656ce9516c59ea04ebd787",
+        "run": 41471929501
+      },
+      {
+        "name": "backup-performance-images-10-api-35",
+        "id": 13158395006,
+        "digest": "sha256:6c97ec8d48e42a4a2dbde2708fd5f03115b5ea1b309a4c75d2858416a781198c",
+        "run": 41475726031
+      },
+      {
+        "name": "backup-performance-fragmented-10-api-35",
+        "id": 13156164723,
+        "digest": "sha256:9a433d961ff111f5c69c43f336769cc262367714b8516407283a21d7dc6d48bb",
+        "run": 41475726031
+      }
+    ]
+  },
+  "cases": [
+    {
+      "kind": "text",
+      "nominal_mib": 10,
+      "encrypted": false,
+      "records": 19,
+      "database_bytes": 10403840,
+      "old_median_ms": 5007.155146,
+      "new_median_ms": 206.999065,
+      "improvement_percent": 95.8659346682045,
+      "output_bytes": 10268191,
+      "old_range_ms": [
+        4905.293996,
+        5027.600231
+      ],
+      "new_range_ms": [
+        203.42642,
+        218.875152
+      ]
+    },
+    {
+      "kind": "text",
+      "nominal_mib": 10,
+      "encrypted": true,
+      "records": 19,
+      "database_bytes": 10403840,
+      "old_median_ms": 6036.023433,
+      "new_median_ms": 1310.634063,
+      "improvement_percent": 78.28646496243648,
+      "output_bytes": 10271384,
+      "old_range_ms": [
+        5970.030132,
+        6323.153678
+      ],
+      "new_range_ms": [
+        1290.529585,
+        1403.853144
+      ]
+    },
+    {
+      "kind": "text",
+      "nominal_mib": 50,
+      "encrypted": false,
+      "records": 97,
+      "database_bytes": 52731904,
+      "old_median_ms": 25009.061076,
+      "new_median_ms": 1111.611361,
+      "improvement_percent": 95.55516555530845,
+      "output_bytes": 52421497,
+      "old_range_ms": [
+        24819.688533,
+        25158.852511
+      ],
+      "new_range_ms": [
+        1107.491632,
+        1140.541501
+      ]
+    },
+    {
+      "kind": "text",
+      "nominal_mib": 50,
+      "encrypted": true,
+      "records": 97,
+      "database_bytes": 52731904,
+      "old_median_ms": 26073.785186,
+      "new_median_ms": 2366.718099,
+      "improvement_percent": 90.92299763108126,
+      "output_bytes": 52437550,
+      "old_range_ms": [
+        25939.993835,
+        26110.031424
+      ],
+      "new_range_ms": [
+        2299.673763,
+        2429.947988
+      ]
+    },
+    {
+      "kind": "text",
+      "nominal_mib": 99,
+      "encrypted": false,
+      "records": 193,
+      "database_bytes": 104820736,
+      "old_median_ms": 51030.260035,
+      "new_median_ms": 2404.805469,
+      "improvement_percent": 95.28749125058226,
+      "output_bytes": 104302675,
+      "old_range_ms": [
+        50985.756431,
+        51400.372316
+      ],
+      "new_range_ms": [
+        2399.21176,
+        2434.562765
+      ]
+    },
+    {
+      "kind": "text",
+      "nominal_mib": 99,
+      "encrypted": true,
+      "records": 193,
+      "database_bytes": 104820736,
+      "old_median_ms": 52614.595511,
+      "new_median_ms": 3895.928536,
+      "improvement_percent": 92.59534640880116,
+      "output_bytes": 104334568,
+      "old_range_ms": [
+        52479.616106,
+        53859.506298
+      ],
+      "new_range_ms": [
+        3875.721649,
+        3923.510049
+      ]
+    },
+    {
+      "kind": "images",
+      "nominal_mib": 50,
+      "encrypted": false,
+      "records": 307,
+      "database_bytes": 39505920,
+      "old_median_ms": 54444.834889,
+      "new_median_ms": 1529.178258,
+      "improvement_percent": 97.19132538262329,
+      "output_bytes": 51903499,
+      "old_range_ms": [
+        53839.686036,
+        54968.287214
+      ],
+      "new_range_ms": [
+        1524.013787,
+        1534.436123
+      ]
+    },
+    {
+      "kind": "images",
+      "nominal_mib": 50,
+      "encrypted": true,
+      "records": 307,
+      "database_bytes": 39505920,
+      "old_median_ms": 55139.582831,
+      "new_median_ms": 2460.216188,
+      "improvement_percent": 95.53820311709569,
+      "output_bytes": 51919392,
+      "old_range_ms": [
+        54872.562716,
+        55986.728408
+      ],
+      "new_range_ms": [
+        2454.453853,
+        2500.611769
+      ]
+    },
+    {
+      "kind": "images",
+      "nominal_mib": 99,
+      "encrypted": false,
+      "records": 610,
+      "database_bytes": 78393344,
+      "old_median_ms": 107348.167605,
+      "new_median_ms": 3249.445653,
+      "improvement_percent": 96.97298451804348,
+      "output_bytes": 103129361,
+      "old_range_ms": [
+        106800.363582,
+        109432.956564
+      ],
+      "new_range_ms": [
+        3227.341205,
+        3390.629353
+      ]
+    },
+    {
+      "kind": "images",
+      "nominal_mib": 99,
+      "encrypted": true,
+      "records": 610,
+      "database_bytes": 78393344,
+      "old_median_ms": 108691.417025,
+      "new_median_ms": 4372.822219,
+      "improvement_percent": 95.97684680291343,
+      "output_bytes": 103160894,
+      "old_range_ms": [
+        108276.650026,
+        112467.928606
+      ],
+      "new_range_ms": [
+        4287.274062,
+        4518.614405
+      ]
+    },
+    {
+      "kind": "many-short",
+      "nominal_mib": 10,
+      "encrypted": false,
+      "records": 5000,
+      "database_bytes": 14589952,
+      "old_median_ms": 11001.008167,
+      "new_median_ms": 619.526179,
+      "improvement_percent": 94.36845996662007,
+      "output_bytes": 7998215,
+      "old_range_ms": [
+        10844.723429,
+        11201.212576
+      ],
+      "new_range_ms": [
+        576.844602,
+        645.081451
+      ]
+    },
+    {
+      "kind": "many-short",
+      "nominal_mib": 10,
+      "encrypted": true,
+      "records": 5000,
+      "database_bytes": 14589952,
+      "old_median_ms": 11947.465511,
+      "new_median_ms": 1611.349726,
+      "improvement_percent": 86.51304141019335,
+      "output_bytes": 8000728,
+      "old_range_ms": [
+        11843.579677,
+        12193.134725
+      ],
+      "new_range_ms": [
+        1576.945424,
+        1641.963912
+      ]
+    },
+    {
+      "kind": "images",
+      "nominal_mib": 10,
+      "encrypted": false,
+      "records": 60,
+      "database_bytes": 7786496,
+      "old_median_ms": 11095.34868,
+      "new_median_ms": 416.368661,
+      "improvement_percent": 96.24735848319459,
+      "output_bytes": 10144117,
+      "old_range_ms": [
+        10604.458241,
+        11788.642695
+      ],
+      "new_range_ms": [
+        413.108271,
+        464.267224
+      ]
+    },
+    {
+      "kind": "images",
+      "nominal_mib": 10,
+      "encrypted": true,
+      "records": 60,
+      "database_bytes": 7786496,
+      "old_median_ms": 12279.125984,
+      "new_median_ms": 1430.966172,
+      "improvement_percent": 88.34635157368217,
+      "output_bytes": 10147270,
+      "old_range_ms": [
+        11953.896377,
+        12317.912781
+      ],
+      "new_range_ms": [
+        1395.804983,
+        1439.231578
+      ]
+    },
+    {
+      "kind": "fragmented",
+      "nominal_mib": 10,
+      "encrypted": false,
+      "records": 19,
+      "database_bytes": 104689664,
+      "old_median_ms": 3782.371692,
+      "new_median_ms": 264.935755,
+      "improvement_percent": 92.9955124304584,
+      "output_bytes": 10268237,
+      "old_range_ms": [
+        3694.004905,
+        3881.8193
+      ],
+      "new_range_ms": [
+        261.645533,
+        269.336979
+      ]
+    },
+    {
+      "kind": "fragmented",
+      "nominal_mib": 10,
+      "encrypted": true,
+      "records": 19,
+      "database_bytes": 104689664,
+      "old_median_ms": 4591.178086,
+      "new_median_ms": 1131.004422,
+      "improvement_percent": 75.3657035119417,
+      "output_bytes": 10271430,
+      "old_range_ms": [
+        4585.825863,
+        4626.390681
+      ],
+      "new_range_ms": [
+        1111.787583,
+        1166.340307
+      ]
+    }
+  ]
+}
