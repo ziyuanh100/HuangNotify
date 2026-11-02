@@ -1,0 +1,23 @@
+name: HuangNotify 1.3.0 release evidence
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-1.3.0.yml, .github/scripts/verify-release-1.3.0.py]
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify functional reports, benchmark cases and existing signed APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/verify-release-1.3.0.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HuangNotify-1.3.0-verified-assets
+          path: release-assets/
