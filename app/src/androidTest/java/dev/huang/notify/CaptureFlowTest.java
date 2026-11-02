@@ -75,6 +75,17 @@ public class CaptureFlowTest extends InstrumentationTestCase {
     Store.IO.submit(()->Store.get(c).putSetting("save_images","0")).get();
     probe(false); Record saved=awaitRecord(true); assertEquals("disabled",saved.imageStatus); assertEquals(0,saved.imageCount);
   }
+  public void testDiagnosticsExplainPauseAndExcludedSource()throws Exception{
+    Store.IO.submit(()->{Store s=Store.get(c);s.putSetting("diagnostics","1");s.clearDiagnostics();s.putSetting("paused","1");}).get();
+    probe(false);awaitDiagnostic("paused");assertTrue(Store.IO.submit(()->Store.get(c).list("",PROBE,false,false,10).isEmpty()).get());
+    probe(true);Store.IO.submit(()->{Store s=Store.get(c);s.putSetting("paused","0");s.putSetting("exclude:"+PROBE,"1");}).get();
+    probe(false);awaitDiagnostic("excluded");assertTrue(Store.IO.submit(()->Store.get(c).list("",PROBE,false,false,10).isEmpty()).get());
+  }
+  private void awaitDiagnostic(String code)throws Exception{
+    long deadline=SystemClock.elapsedRealtime()+12000;
+    while(SystemClock.elapsedRealtime()<deadline){org.json.JSONArray events=Store.IO.submit(()->Store.get(c).diagnosticEvents()).get();for(int i=0;i<events.length();i++){org.json.JSONObject row=events.getJSONObject(i);if(code.equals(row.getString("code"))&&PROBE.equals(row.getString("package")))return;}SystemClock.sleep(100);}
+    fail("Diagnostic missing: "+code);
+  }
   private Record awaitRecord(boolean active) throws Exception { return awaitRecord(active,null); }
   private Record awaitRecord(boolean active,String id) throws Exception {
     long deadline=SystemClock.elapsedRealtime()+12000;

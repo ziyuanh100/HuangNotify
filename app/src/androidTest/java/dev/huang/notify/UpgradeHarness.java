@@ -46,10 +46,12 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
         Store.IO.submit(()->{
           Store store=Store.get(c);
           store.capture("upgrade-fixture","fixture.package","Fixture","seed","first",1);
-          store.capture("upgrade-fixture","fixture.package","Fixture","seed","updated",2);
+          android.graphics.Bitmap seed=android.graphics.Bitmap.createBitmap(8,8,android.graphics.Bitmap.Config.ARGB_8888);seed.eraseColor(0xff146c59);
+          NotificationImages.Attachment saved=NotificationImages.normalize(seed);seed.recycle();
+          store.capture("upgrade-fixture","fixture.package","Fixture","seed","updated",2,new NotificationImages.Result(java.util.Collections.singletonList(saved),"saved"));
           Record record=store.list("",null,false,false,10).get(0);
           store.favorite(record.id,true); store.note(record.id,"upgrade-sentinel");
-          store.putSetting("paused","1"); store.putSetting("retention","30");
+          store.putSetting("paused","1"); store.putSetting("retention","30");return null;
         }).get();
         File target=UpgradeManager.apk(c);
         try(ParcelFileDescriptor fd=getUiAutomation().executeShellCommand("cat /data/local/tmp/huangnotify-next.apk"); InputStream in=new FileInputStream(fd.getFileDescriptor()); OutputStream out=new FileOutputStream(target)) {
@@ -90,10 +92,11 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
         try { require(store.versions(r.id).length()==2,"Version history was lost"); } catch(Exception e) { throw new RuntimeException(e); }
         require(store.setting("paused","0").equals("1") && store.setting("retention","0").equals("30"),"Recording settings were lost");
       }).get();
-      require(Store.get(c).getReadableDatabase().getVersion()==2,"Image schema migration did not run");
+      require(Store.get(c).getReadableDatabase().getVersion()==3,"Diagnostic schema migration did not run");
       Store.IO.submit(()->{
         Store store=Store.get(c); Record old=store.list("",null,false,false,10).get(0);
-        require(old.imageCount==0 && "none".equals(old.imageStatus),"Legacy record image state changed");
+        require(old.imageCount==1 && "saved".equals(old.imageStatus),"Existing image was lost during migration");
+        try{require(store.image(store.recordImages(old.id).getString(0))!=null,"Existing image bytes missing");}catch(Exception e){throw new RuntimeException(e);}
         android.graphics.Bitmap bitmap=android.graphics.Bitmap.createBitmap(8,8,android.graphics.Bitmap.Config.ARGB_8888); bitmap.eraseColor(0xff146c59);
         NotificationImages.Attachment attachment=NotificationImages.normalize(bitmap); bitmap.recycle();
         store.putSetting("paused","0");

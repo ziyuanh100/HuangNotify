@@ -65,10 +65,9 @@ public final class MainActivity extends Activity {
       retention = "0",
       lastSaved = "0";
   private long[] counts = {0, 0, 0};
-  private boolean onlyToday = false, refreshing = false, resumed = false, busy = false;
+  private boolean onlyToday = false, refreshing = false, resumed = false;
   private int limit = 80, generation;
-  private byte[] pendingExport;
-  private boolean pendingEncrypted;
+  BackupScreen backupScreen;
   private final Runnable poll =
       new Runnable() {
         public void run() {
@@ -94,6 +93,8 @@ public final class MainActivity extends Activity {
     super.onCreate(state);
     u = new Ui(this);
     permissionGuide = new PermissionGuide(this);
+    backupScreen=new BackupScreen(this,u,this::refresh);
+    AutoBackup.IO.execute(()->BackupFiles.cleanStale(getApplicationContext()));
     updateFlow=new UpdateFlow(this);
     if (state != null) {
       page = state.getString("page", "records");
@@ -178,7 +179,7 @@ public final class MainActivity extends Activity {
     updateFlow.destroy();
     handler.removeCallbacksAndMessages(null);
     AppDialog.dismissAll(this);
-    if (pendingExport != null) Arrays.fill(pendingExport, (byte) 0);
+    backupScreen.destroy();
     super.onDestroy();
   }
 
@@ -839,6 +840,7 @@ public final class MainActivity extends Activity {
     body.addView(inner);
     section(inner, "權限與背景運作");
     settingRow(inner, "權限設定精靈", "檢查通知存取權，依序完成必要設定", "check", () -> permissionGuide.restart());
+    settingRow(inner,"通知診斷","連線狀態、來源排除與最近處理結果","check",()->Diagnostics.show(this));
     settingRow(inner, "背景運作說明", "Samsung 與省電模式設定建議", "bell", () -> permissionGuide.backgroundHelp());
     section(inner, "記錄管理");
     settingRow(
@@ -1118,24 +1120,20 @@ public final class MainActivity extends Activity {
   }
 
   private void storageDialog() {
-    StringBuilder b =
-        new StringBuilder(
-            "目前保存 "
-                + format(counts[0])
-                + " 則\n今日新增 "
-                + format(counts[1])
-                + " 則\n收藏 "
-                + format(counts[2])
-                + " 則\n資料庫大小 "
-                + databaseSize()
-                + "\n\n各 App 保存數量\n");
-    for (String[] a : apps) b.append(a[1]).append("：").append(a[2]).append(" 則\n");
-    b.append("\n統計只計入成功保存且尚未刪除的通知。同一筆通知的更新另存為版本。");
-    new AppDialog.Builder(this)
-        .setTitle("儲存概況")
-        .setMessage(b.toString())
-        .setPositiveButton("完成", null)
-        .show();
+    Store.IO.execute(()->{try{long[] usage=Store.get(this).imageUsage();runOnUiThread(()->{
+      if(isDestroyed())return;
+      StringBuilder text=new StringBuilder("目前保存 "+format(counts[0])+" 則\n今日新增 "+format(counts[1])+" 則\n收藏 "+format(counts[2])+" 則\n資料庫大小 "+databaseSize()+"\n圖片 "+usage[0]+" 張（共用圖片只計一次） · "+android.text.format.Formatter.formatFileSize(this,usage[1])+"\n\n各 App 保存數量\n");
+      for(String[] app:apps)text.append(app[1]).append("：").append(app[2]).append(" 則\n");
+      text.append("\n通知更新另存為歷程。清除圖片會保留文字、歷程、收藏與備註；已釋出的資料庫空間可再次使用，檔案大小不一定立即縮小。");
+      new AppDialog.Builder(this).setTitle("儲存概況").setMessage(text.toString()).setPositiveButton("完成",null).setNeutralButton("清除已保存圖片",(d,w)->clearImagesDialog()).show();
+    });}catch(Exception e){runOnUiThread(()->toast("無法讀取圖片用量"));}});
+  }
+  private void clearImagesDialog(){
+    LinearLayout body=u.column();body.addView(u.text("會清除通知與歷程中的圖片，文字及備註仍保留。你另存的圖片及外部備份不受影響；若需要圖片，請先建立備份。",14,u.muted,false));
+    AppDialog.Toggle include=new AppDialog.Toggle(this);include.setText("也清除收藏通知的圖片");body.addView(include);
+    new AppDialog.Builder(this).setTitle("清除已保存圖片？").setView(body).setNegativeButton("取消",null).setPositiveButton("確認清除",(d,w)->{
+      boolean favorites=include.isChecked();Store.IO.execute(()->{try{long freed=Store.get(this).clearImages(favorites);runOnUiThread(()->{refresh();toast("已清除圖片，釋出可重用空間 "+android.text.format.Formatter.formatFileSize(this,freed));});}catch(Exception e){runOnUiThread(()->toast("圖片清除失敗，請稍後重試"));}});
+    }).show();
   }
 
   private void privacyDialog() {
@@ -1153,132 +1151,14 @@ public final class MainActivity extends Activity {
         .show();
   }
 
-  private void exportDialog() {
-    if (busy) {
-      toast("正在處理備份，請稍候");
-      return;
-    }
-    LinearLayout body = dialogBody();
-    body.addView(u.text("備份 v2 包含通知文字、已保存圖片、更新歷程、收藏、備註及保存設定，總上限 20 MB。舊版 App 無法讀取 v2；新版仍可匯入 v1。加密密碼遺失後無法還原。", 14, u.muted, false));
-    u.gap(body, 12);
-    EditText password = edit("設定備份密碼（至少 8 個字元）");
-    password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-    body.addView(password);
-    u.gap(body, 8);
-    EditText confirm = edit("再次輸入密碼");
-    confirm.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-    body.addView(confirm);
-    AppDialog dialog =
-        new AppDialog.Builder(this)
-            .setTitle("建立備份")
-            .setView(body)
-            .setNegativeButton("取消", null)
-            .setNeutralButton(
-                "不加密",
-                (d, w) ->
-                    new AppDialog.Builder(this)
-                        .setTitle("匯出未加密備份？")
-                        .setMessage("能取得檔案的人都可以閱讀通知內容。請妥善保管。")
-                        .setNegativeButton("取消", null)
-                        .setPositiveButton("匯出", (dd, ww) -> prepareExport(null))
-                        .show())
-            .setPositiveButton("加密匯出", null)
-            .create();
-    dialog.setOnShowListener(
-        d ->
-            dialog
-                .getButton(AppDialog.BUTTON_POSITIVE)
-                .setOnClickListener(
-                    v -> {
-                      String a = password.getText().toString(), b = confirm.getText().toString();
-                      if (a.length() < 8) {
-                        password.setError("至少 8 個字元");
-                        return;
-                      }
-                      if (!a.equals(b)) {
-                        confirm.setError("兩次密碼不相同");
-                        return;
-                      }
-                      char[] secret = a.toCharArray();
-                      password.setText("");
-                      confirm.setText("");
-                      dialog.dismiss();
-                      prepareExport(secret);
-                    }));
-    dialog.show();
-  }
-
-  private void prepareExport(char[] password) {
-    busy = true;
-    toast("正在建立備份…");
-    Store.IO.execute(
-        () -> {
-          try {
-            byte[] raw = Store.get(this).exportBackup().toString().getBytes(StandardCharsets.UTF_8);
-            if (raw.length > BackupCrypto.MAX_BYTES)
-              throw new IllegalArgumentException("備份超過 20 MB，請先整理紀錄");
-            byte[] output = password == null ? raw : BackupCrypto.encrypt(raw, password);
-            if (password != null) Arrays.fill(raw, (byte) 0);
-            runOnUiThread(
-                () -> {
-                  if (isDestroyed()) {
-                    Arrays.fill(output, (byte) 0);
-                    return;
-                  }
-                  pendingExport = output;
-                  pendingEncrypted = password != null;
-                  Intent intent =
-                      new Intent(Intent.ACTION_CREATE_DOCUMENT)
-                          .addCategory(Intent.CATEGORY_OPENABLE)
-                          .setType("application/octet-stream")
-                          .putExtra(
-                              Intent.EXTRA_TITLE,
-                              "HuangNotify_"
-                                  + date(System.currentTimeMillis(), "yyyyMMdd_HHmm")
-                                  + (pendingEncrypted ? ".hnbk" : ".hnjson"));
-                  try {
-                    startActivityForResult(intent, 101);
-                  } catch (Exception e) {
-                    finishBackup();
-                    toast("無法開啟檔案選擇器");
-                  }
-                });
-          } catch (Exception e) {
-            runOnUiThread(
-                () -> {
-                  finishBackup();
-                  toast("備份失敗：" + safeError(e));
-                });
-          } finally {
-            if (password != null) Arrays.fill(password, '\0');
-          }
-        });
-  }
-
-  private void chooseImport() {
-    if (busy) {
-      toast("正在處理備份，請稍候");
-      return;
-    }
-    Intent intent =
-        new Intent(Intent.ACTION_OPEN_DOCUMENT)
-            .addCategory(Intent.CATEGORY_OPENABLE)
-            .setType("*/*");
-    try {
-      startActivityForResult(intent, 102);
-    } catch (Exception e) {
-      toast("無法開啟檔案選擇器");
-    }
-  }
-
-  @Override
-  protected void onActivityResult(int request, int result, Intent data) {
-    super.onActivityResult(request, result, data);
-    if (result != RESULT_OK || data == null || data.getData() == null) {
-      if (request == 101) finishBackup();
-      return;
-    }
-    Uri uri = data.getData();
+  private void exportDialog() {backupScreen.exportDialog();}
+  private void chooseImport() {backupScreen.chooseImport();}
+  @Override protected void onActivityResult(int request,int result,Intent data) {
+    super.onActivityResult(request,result,data);
+    if(backupScreen.onResult(request,result,data))return;
+    if(result!=RESULT_OK||data==null||data.getData()==null)return;
+    Uri uri=data.getData();
+    if(request==104){Diagnostics.save(this,uri);return;}
     if (request == 103) {
       try {
         int flags=data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
@@ -1288,202 +1168,6 @@ public final class MainActivity extends Activity {
       } catch(Exception e) { toast("無法保留資料夾權限，請重新選擇"); }
       return;
     }
-    if (request == 101) {
-      if (pendingExport == null) {
-        finishBackup();
-        toast("備份作業已中斷，請重新匯出");
-        return;
-      }
-      byte[] bytes = pendingExport;
-      pendingExport = null;
-      Store.IO.execute(
-          () -> {
-            try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
-              if (out == null) throw new java.io.IOException("無法開啟目標檔案");
-              out.write(bytes);
-              out.flush();
-              runOnUiThread(
-                  () -> {
-                    finishBackup();
-                    toast("備份已儲存，共 " + bytes.length + " bytes");
-                  });
-            } catch (Exception e) {
-              runOnUiThread(
-                  () -> {
-                    finishBackup();
-                    toast("寫入失敗，請重新備份；目標檔可能不完整");
-                  });
-            } finally {
-              Arrays.fill(bytes, (byte) 0);
-            }
-          });
-    } else if (request == 102) {
-      busy = true;
-      Store.IO.execute(
-          () -> {
-            try (InputStream in = getContentResolver().openInputStream(uri)) {
-              if (in == null) throw new java.io.IOException();
-              ByteArrayOutputStream out = new ByteArrayOutputStream();
-              byte[] buffer = new byte[8192];
-              int n;
-              while ((n = in.read(buffer)) != -1) {
-                if (out.size() + n > BackupCrypto.MAX_BYTES + 53)
-                  throw new IllegalArgumentException("備份檔超過 20 MB 上限");
-                out.write(buffer, 0, n);
-              }
-              byte[] bytes = out.toByteArray();
-              runOnUiThread(
-                  () -> {
-                    if (BackupCrypto.encrypted(bytes)) decryptDialog(bytes);
-                    else previewImport(bytes);
-                  });
-            } catch (Exception e) {
-              runOnUiThread(
-                  () -> {
-                    finishBackup();
-                    toast("讀取失敗：" + safeError(e));
-                  });
-            }
-          });
-    }
-  }
-
-  private void decryptDialog(byte[] bytes) {
-    if (isDestroyed()) return;
-    EditText password = edit("輸入備份密碼");
-    password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-    AppDialog d =
-        new AppDialog.Builder(this)
-            .setTitle("解鎖備份")
-            .setView(password)
-            .setNegativeButton(
-                "取消",
-                (dd, w) -> {
-                  Arrays.fill(bytes, (byte) 0);
-                  finishBackup();
-                })
-            .setPositiveButton(
-                "解鎖",
-                (dd, w) -> {
-                  char[] secret = password.getText().toString().toCharArray();
-                  password.setText("");
-                  Store.IO.execute(
-                      () -> {
-                        try {
-                          byte[] raw = BackupCrypto.decrypt(bytes, secret);
-                          runOnUiThread(() -> previewImport(raw));
-                        } catch (Exception e) {
-                          runOnUiThread(
-                              () -> {
-                                finishBackup();
-                                toast("無法解鎖：密碼錯誤或備份檔已損壞");
-                              });
-                        } finally {
-                          Arrays.fill(secret, '\0');
-                          Arrays.fill(bytes, (byte) 0);
-                        }
-                      });
-                })
-            .create();
-    d.setOnCancelListener(
-        dd -> {
-          Arrays.fill(bytes, (byte) 0);
-          finishBackup();
-        });
-    d.show();
-  }
-
-  private void previewImport(byte[] bytes) {
-    Store.IO.execute(
-        () -> {
-          try {
-            JSONObject backup = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
-            BackupFormat.validate(backup);
-            int count = backup.getJSONArray("records").length();
-            runOnUiThread(
-                () -> {
-                  if (isDestroyed()) return;
-                  LinearLayout body = dialogBody();
-                  body.addView(
-                      u.text(
-                          "備份日期："
-                              + date(backup.optLong("created"), "yyyy/MM/dd HH:mm")
-                              + "\n包含 "
-                              + format(count)
-                              + " 則通知 · " + (backup.optJSONArray("images")==null?0:backup.optJSONArray("images").length()) + " 張圖片\n\n匯入時保留手機現有內容，以識別碼略過重複紀錄，並補入缺少的更新版本。",
-                          15,
-                          u.ink,
-                          false));
-                  AppDialog.Toggle settings = new AppDialog.Toggle(this);
-                  settings.setText("同時還原保存期限、圖片記錄與來源設定");
-                  settings.setTextColor(u.ink);
-                  body.addView(settings);
-                  AppDialog dialog =
-                      new AppDialog.Builder(this)
-                          .setTitle("確認還原備份")
-                          .setView(body)
-                          .setNegativeButton("取消", (d, w) -> finishBackup())
-                          .setPositiveButton(
-                              "合併匯入",
-                              (d, w) -> {
-                                boolean restoreSettings = settings.isChecked();
-                                Store.IO.execute(
-                                    () -> {
-                                      try {
-                                        int[] result =
-                                            Store.get(this).restore(backup, restoreSettings);
-                                        runOnUiThread(
-                                            () -> {
-                                              finishBackup();
-                                              refresh();
-                                              new AppDialog.Builder(this)
-                                                  .setTitle("還原完成")
-                                                  .setMessage(
-                                                      "新增 "
-                                                          + result[0]
-                                                          + " 則\n略過 "
-                                                          + result[1]
-                                                          + " 則重複紀錄\n補入 "
-                                                          + result[2]
-                                                          + " 個更新版本")
-                                                  .setPositiveButton("完成", null)
-                                                  .show();
-                                            });
-                                      } catch (Exception e) {
-                                        runOnUiThread(
-                                            () -> {
-                                              finishBackup();
-                                              toast("匯入失敗，原有資料未變更");
-                                            });
-                                      }
-                                    });
-                              })
-                          .create();
-                  dialog.setOnCancelListener(d -> finishBackup());
-                  dialog.show();
-                });
-          } catch (Exception e) {
-            runOnUiThread(
-                () -> {
-                  finishBackup();
-                  toast("無法還原：" + safeError(e));
-                });
-          } finally {
-            Arrays.fill(bytes, (byte) 0);
-          }
-        });
-  }
-
-  private void finishBackup() {
-    busy = false;
-    if (pendingExport != null) {
-      Arrays.fill(pendingExport, (byte) 0);
-      pendingExport = null;
-    }
-  }
-
-  private String safeError(Exception e) {
-    return e instanceof IllegalArgumentException ? e.getMessage() : "檔案格式不正確或無法存取";
   }
 
   private LinearLayout dialogBody() {

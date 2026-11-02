@@ -87,11 +87,12 @@ public class BackupTest extends AndroidTestCase {
       AutoBackup.run(c,true,new AtomicBoolean(),message->latch.countDown()); assertTrue(latch.await(30,TimeUnit.SECONDS));
       assertTrue(AutoBackup.prefs(c).getLong("success",0)>0); assertEquals("",AutoBackup.prefs(c).getString("error",""));
       AutoBackup.Documents docs=new AutoBackup.Documents(c,tree); boolean found=false;
-      for(String id:docs.files().keySet()) { try(InputStream in=docs.read(id); ByteArrayOutputStream out=new ByteArrayOutputStream()) {
-        byte[] buffer=new byte[8192]; int n; while((n=in.read(buffer))!=-1) out.write(buffer,0,n);
-        byte[] raw=BackupCrypto.decrypt(out.toByteArray(),"password123".toCharArray());
-        BackupFormat.validate(new org.json.JSONObject(new String(raw,"UTF-8"))); found=true;
-      } }
+      for(String id:docs.files().keySet()) {
+        try(BackupFiles.Session session=BackupFiles.read(c,Uri.parse(id),new BackupTask())) {
+          assertTrue(session.encrypted);BackupFiles.unlock(session,"password123".toCharArray(),new BackupTask());
+          assertEquals(3,session.stage.format);found=true;
+        }
+      }
       assertTrue(found);
     } finally { AutoBackup.disable(c); AutoBackup.Documents docs=new AutoBackup.Documents(c,tree); for(String id:docs.files().keySet()) docs.delete(id); AutoBackup.prefs(c).edit().clear().commit(); }
   }

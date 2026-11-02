@@ -15,7 +15,7 @@ import java.util.concurrent.*;
 /** Only notification attachments; never scans storage, loads avatars, or opens network URLs. */
 final class NotificationImages {
   static final int MAX_IMAGES=4, MAX_EDGE=1440, MAX_IMAGE_BYTES=256*1024, MAX_SOURCE_BYTES=4*1024*1024;
-  static final Set<String> STATUSES=new HashSet<>(Arrays.asList("none","saved","partial","unavailable","disabled"));
+  static final Set<String> STATUSES=new HashSet<>(Arrays.asList("none","saved","partial","unavailable","disabled","cleared"));
   private static final ThreadPoolExecutor READERS=new ThreadPoolExecutor(0,1,10,TimeUnit.SECONDS,new ArrayBlockingQueue<>(1),r->{Thread t=new Thread(r,"notification-image-reader"); t.setDaemon(true); return t;});
   static final class Attachment {
     final String hash; final byte[] data; final int width,height;
@@ -39,6 +39,7 @@ final class NotificationImages {
       case "saved": return "已保存 "+count+" 張圖片 · 壓縮預覽";
       case "partial": return "已保存 "+count+" 張；部分圖片無法讀取或超過上限";
       case "unavailable": return "圖片未保存：來源未授權、格式不支援、超過限制或讀取逾時";
+      case "cleared": return "圖片已由你清除，文字仍保留";
       case "disabled": return "圖片未保存：當時已關閉圖片記錄";
       default: return "";
     }

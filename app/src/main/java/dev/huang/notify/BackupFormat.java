@@ -9,7 +9,7 @@ import org.json.JSONObject;
 public final class BackupFormat {
   private BackupFormat() {}
 
-  private static long integer(JSONObject object, String name, long min, long max) throws Exception {
+  static long integer(JSONObject object, String name, long min, long max) throws Exception {
     Object value=object.get(name);
     if (!(value instanceof Integer) && !(value instanceof Long)) throw new IllegalArgumentException("備份整數欄位格式錯誤："+name);
     long number=((Number)value).longValue();

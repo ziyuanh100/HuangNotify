@@ -28,8 +28,10 @@ public final class Store extends SQLiteOpenHelper {
     return instance;
   }
 
+  private final java.io.File databaseFile;
   private Store(Context context) {
-    super(context, "notifications.db", null, 2);
+    super(context, "notifications.db", null, 3);
+    databaseFile=context.getDatabasePath("notifications.db");
     setWriteAheadLoggingEnabled(true);
   }
 
@@ -57,12 +59,16 @@ public final class Store extends SQLiteOpenHelper {
     db.execSQL("CREATE INDEX records_key ON records(nkey,active)");
     db.execSQL("CREATE INDEX versions_record ON versions(record_id,time)");
     imageSchema(db);
+    diagnosticSchema(db);
   }
 
   @Override
   public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
     if(oldVersion<2)imageSchema(db);
+    if(oldVersion<3)diagnosticSchema(db);
   }
+
+  private static void diagnosticSchema(SQLiteDatabase db) {db.execSQL("CREATE TABLE diagnostics(id INTEGER PRIMARY KEY AUTOINCREMENT,time INTEGER NOT NULL,code TEXT NOT NULL,pkg TEXT NOT NULL)");}
 
   private static void imageSchema(SQLiteDatabase db) {
     db.execSQL("ALTER TABLE records ADD COLUMN image_status TEXT NOT NULL DEFAULT 'none'");
@@ -147,8 +153,10 @@ public final class Store extends SQLiteOpenHelper {
     capture(key,pkg,app,title,body,posted,NotificationImages.Result.empty("none"));
   }
 
-  public void capture(String key,String pkg,String app,String title,String body,long posted,NotificationImages.Result images) {
-    if (excluded(pkg) || "1".equals(setting("paused", "0"))) return;
+  public void capture(String key,String pkg,String app,String title,String body,long posted,NotificationImages.Result images) {captureEvent(key,pkg,app,title,body,posted,images);}
+  public String captureEvent(String key,String pkg,String app,String title,String body,long posted,NotificationImages.Result images) {
+    if(excluded(pkg))return "excluded";
+    if("1".equals(setting("paused","0")))return "paused";
     SQLiteDatabase db = getWritableDatabase();
     db.beginTransaction();
     try {
@@ -167,7 +175,7 @@ public final class Store extends SQLiteOpenHelper {
       String hash = NotificationImages.fingerprint(title,body,imageHashes,images.status);
       if (id != null && hash.equals(oldHash)) {
         db.setTransactionSuccessful();
-        return;
+        return "unchanged";
       }
       putImages(images);
       ContentValues v = new ContentValues();
@@ -202,6 +210,7 @@ public final class Store extends SQLiteOpenHelper {
       putSetting("last_saved", Long.toString(now));
       db.setTransactionSuccessful();
       error = "";
+      return "saved";
     } finally {
       db.endTransaction();
     }
@@ -522,5 +531,92 @@ public final class Store extends SQLiteOpenHelper {
   private static List<String> jsonHashes(JSONArray array) throws Exception {
     List<String> hashes=new ArrayList<>(); for(int i=0;i<array.length();i++)hashes.add(array.getString(i)); return hashes;
   }
+
+  /** Called on Store.IO: checkpoint and hold the writer lock for the short file-copy phase. */
+  void snapshot(java.io.File target,BackupTask task)throws Exception {
+    SQLiteDatabase db=getWritableDatabase();
+    try(Cursor c=db.rawQuery("PRAGMA wal_checkpoint(FULL)",null)) {
+      if(!c.moveToFirst() || c.getInt(0)!=0 || c.getInt(1)!=c.getInt(2))throw new BackupProblem("資料庫正忙碌，請稍後再備份");
+    }
+    db.beginTransaction();
+    try(java.io.InputStream in=new java.io.BufferedInputStream(new java.io.FileInputStream(databaseFile));java.io.OutputStream out=new java.io.BufferedOutputStream(new java.io.FileOutputStream(target))) {
+      BackupFiles.copy(in,out,Long.MAX_VALUE,task);db.setTransactionSuccessful();
+    } finally {db.endTransaction();}
+  }
+  private static ContentValues importValues(Cursor c,boolean record) {
+    ContentValues v=new ContentValues();for(String name:record?BackupArchive.TEXT:new String[]{"id","title","body"})v.put(name,s(c,name));
+    for(String name:record?BackupArchive.TIMES:new String[]{"time"})v.put(name,l(c,name));v.put("image_status",s(c,"image_status"));return v;
+  }
+  private static String importedHash(Cursor c,List<String> refs){return NotificationImages.fingerprint(s(c,"title"),s(c,"body"),refs,s(c,"image_status"));}
+  int[] restoreStage(BackupArchive.Stage stage,boolean restoreSettings,BackupTask task)throws Exception {
+    SQLiteDatabase db=getWritableDatabase();int added=0,skipped=0,merged=0;task.phase("合併紀錄",0);task.check();db.beginTransaction();
+    try {
+      try(Cursor images=stage.db.rawQuery("SELECT * FROM images",null)) {
+        while(images.moveToNext()) {task.check();String hash=s(images,"hash");byte[] bytes=images.getBlob(images.getColumnIndexOrThrow("data")),existing=image(hash);
+          if(existing!=null&&!java.util.Arrays.equals(existing,bytes))throw new BackupProblem("圖片識別碼衝突，未匯入任何資料");
+          if(existing==null){ContentValues v=new ContentValues();v.put("hash",hash);v.put("data",bytes);v.put("width",l(images,"width"));v.put("height",l(images,"height"));db.insertOrThrow("images",null,v);}
+        }
+      }
+      try(Cursor records=stage.db.rawQuery("SELECT * FROM records ORDER BY ordinal",null)) {
+        while(records.moveToNext()) {
+          task.check();String id=s(records,"id"),ordinal=Long.toString(l(records,"ordinal"));boolean exists;
+          List<String> refs=stage.refs("r",ordinal);
+          try(Cursor old=db.rawQuery("SELECT pkg,nkey,image_status,title,body,updated FROM records WHERE id=?",new String[]{id})) {
+            exists=old.moveToFirst();if(exists&&(!old.getString(0).equals(s(records,"pkg"))||!old.getString(1).equals(s(records,"nkey"))))throw new BackupProblem("通知識別碼衝突，未匯入任何資料");
+            if(exists&&"cleared".equals(old.getString(2))&&!refs.isEmpty()&&old.getString(3).equals(s(records,"title"))&&old.getString(4).equals(s(records,"body"))&&old.getLong(5)==l(records,"updated")) {
+              ContentValues v=new ContentValues();v.put("image_status",s(records,"image_status"));v.put("hash",importedHash(records,refs));db.update("records",v,"id=?",new String[]{id});linkImages("record_images","record_id",id,refs);
+            }
+          }
+          if(!exists) {ContentValues v=importValues(records,true);v.put("active",0);v.put("hash",importedHash(records,refs));db.insertOrThrow("records",null,v);linkImages("record_images","record_id",id,refs);added++;}else skipped++;
+          try(Cursor versions=stage.db.rawQuery("SELECT * FROM versions WHERE owner=? ORDER BY time ASC,seq DESC",new String[]{ordinal})) {
+            while(versions.moveToNext()) {
+              task.check();String vid=s(versions,"id");List<String> vrefs=stage.refs("v",vid);boolean found;
+              try(Cursor old=db.rawQuery("SELECT record_id,time,title,body,image_status FROM versions WHERE id=?",new String[]{vid})) {
+                found=old.moveToFirst();if(found) {
+                  if(!id.equals(old.getString(0))||old.getLong(1)!=l(versions,"time")||!old.getString(2).equals(s(versions,"title"))||!old.getString(3).equals(s(versions,"body")))throw new BackupProblem("更新歷程識別碼衝突，未匯入任何資料");
+                  if(stage.format>=2&&(!s(versions,"image_status").equals(old.getString(4))||!vrefs.equals(imageHashes("version_images","version_id",vid)))) {
+                    if("cleared".equals(old.getString(4))&&!vrefs.isEmpty()) {ContentValues v=new ContentValues();v.put("image_status",s(versions,"image_status"));v.put("hash",importedHash(versions,vrefs));db.update("versions",v,"id=?",new String[]{vid});linkImages("version_images","version_id",vid,vrefs);merged++;}
+                    else throw new BackupProblem("更新歷程圖片衝突，未匯入任何資料");
+                  }
+                }
+              }
+              if(!found) {ContentValues v=importValues(versions,false);v.put("record_id",id);v.put("hash",importedHash(versions,vrefs));db.insertOrThrow("versions",null,v);linkImages("version_images","version_id",vid,vrefs);if(exists)merged++;}
+            }
+          }
+        }
+      }
+      if(restoreSettings)try(Cursor c=stage.db.rawQuery("SELECT name,value FROM settings",null)){while(c.moveToNext()){task.check();putSetting(c.getString(0),c.getString(1));}}
+      task.check();pruneImages();db.setTransactionSuccessful();return new int[]{added,skipped,merged};
+    } finally {db.endTransaction();}
+  }
+  long[] imageUsage() {try(Cursor c=getReadableDatabase().rawQuery("SELECT COUNT(*),COALESCE(SUM(length(data)),0) FROM images WHERE EXISTS(SELECT 1 FROM record_images r WHERE r.image_hash=images.hash) OR EXISTS(SELECT 1 FROM version_images v WHERE v.image_hash=images.hash)",null)){c.moveToFirst();return new long[]{c.getLong(0),c.getLong(1)};}}
+  long clearImages(boolean includeFavorites) {
+    SQLiteDatabase db=getWritableDatabase();long before=imageUsage()[1];db.beginTransaction();
+    try {
+      String condition=includeFavorites?"1=1":"favorite=0";
+      for(String table:new String[]{"records","versions"}) {
+        String links=table.equals("records")?"record_images":"version_images",key=table.equals("records")?"record_id":"version_id";
+        String target=table.equals("records")?condition:"record_id IN (SELECT id FROM records WHERE "+condition+")";
+        try(Cursor c=db.rawQuery("SELECT id,title,body FROM "+table+" t WHERE "+target+" AND EXISTS(SELECT 1 FROM "+links+" i WHERE i."+key+"=t.id)",null)) {
+          while(c.moveToNext()) {ContentValues v=new ContentValues();v.put("image_status","cleared");v.put("hash",NotificationImages.fingerprint(c.getString(1),c.getString(2),java.util.Collections.emptyList(),"cleared"));db.update(table,v,"id=?",new String[]{c.getString(0)});}
+        }
+        db.delete(links,key+" IN (SELECT id FROM "+table+" WHERE "+target+")",null);
+      }
+      pruneImages();db.setTransactionSuccessful();
+    } finally {db.endTransaction();}
+    return before-imageUsage()[1];
+  }
+  void diagnostic(String code,String pkg) {
+    if("0".equals(setting("diagnostics","1")))return;
+    ContentValues v=new ContentValues();long now=System.currentTimeMillis();v.put("time",now);v.put("code",code);v.put("pkg",pkg==null?"":pkg.substring(0,Math.min(255,pkg.length())));
+    SQLiteDatabase db=getWritableDatabase();db.insertOrThrow("diagnostics",null,v);
+    db.execSQL("DELETE FROM diagnostics WHERE id NOT IN(SELECT id FROM diagnostics ORDER BY id DESC LIMIT 200)");
+    if(code.equals("received")||code.equals("replayed"))putSetting("diagnostic_received",Long.toString(now));
+    if(code.equals("saved"))putSetting("diagnostic_saved",Long.toString(now));
+  }
+  JSONArray diagnosticEvents()throws Exception {
+    JSONArray rows=new JSONArray();try(Cursor c=getReadableDatabase().rawQuery("SELECT time,code,pkg FROM diagnostics ORDER BY id DESC",null)){while(c.moveToNext())rows.put(new JSONObject().put("time",c.getLong(0)).put("code",c.getString(1)).put("package",c.getString(2)));}return rows;
+  }
+  void clearDiagnostics(){getWritableDatabase().delete("diagnostics",null,null);putSetting("diagnostic_received","0");putSetting("diagnostic_saved","0");}
 
 }
