@@ -75,11 +75,12 @@ assert apk_sha=="ea50641f09d6ffa2142300c279b633f245882c6ab520204df5efa73b10fe1cd
 apk=ROOT/"HuangNotify-v1.3.0.apk"; apk.write_bytes(old)
 unsigned=member(archive(fa["HuangNotify-unsigned-release-apk"]),"app-release-unsigned.apk")
 za=zipfile.ZipFile(io.BytesIO(old)); zb=zipfile.ZipFile(io.BytesIO(unsigned))
-assert set(za.namelist())==set(zb.namelist()),{"only_signed":sorted(set(za.namelist())-set(zb.namelist())),"only_unsigned":sorted(set(zb.namelist())-set(za.namelist()))}
+signing_entries={"META-INF/HUANGNOT.RSA","META-INF/HUANGNOT.SF","META-INF/MANIFEST.MF"}
+assert set(za.namelist())-signing_entries==set(zb.namelist()),"Non-signature APK entry set changed"
 provenance="META-INF/version-control-info.textproto"
 assert b"0c65e5d3124bc4cef3b37833bf553e2ff04a1989" in za.read(provenance)
 assert b"ad4cf5983af12cd540cbbcfc87a9ecd5c0256007" in zb.read(provenance)
-different=[n for n in za.namelist() if za.read(n)!=zb.read(n)]
+different=[n for n in zb.namelist() if za.read(n)!=zb.read(n)]
 assert different==[provenance],different
 signers=sorted(pathlib.Path(os.environ["ANDROID_HOME"]).glob("build-tools/*/apksigner"))
 assert signers,"Official Android SDK apksigner unavailable"
@@ -89,7 +90,7 @@ assert cert in verified and "Verified using v2 scheme (APK Signature Scheme v2):
 (ROOT/"SHA256SUMS.txt").write_text(apk_sha+"  HuangNotify-v1.3.0.apk\n")
 full={"app_version":"1.3.0","api":35,"baseline_commit":"527a0f18091d209fce11debee02d8d38be73ce18","warmups_per_mode":1,"measured_runs_per_mode":5,"destination":"private debug DocumentsProvider; local disk; no picker time","memory":"Java used heap, process PSS and private temporary bytes sampled every 100 ms; sampled maxima are not guaranteed peaks","cases":cases,"artifacts":evidence,"completed":True}
 (ROOT/"backup-performance-1.3.0-api35.json").write_text(json.dumps(full,ensure_ascii=False,indent=2)+"\n")
-validation={"jvm":{"tests":16,"failures":0},"android":{"26":{"tests":99,"failures":0},"35":{"tests":99,"failures":0},"36":{"tests":99,"failures":0}},"upgrade_cycles_passed":3,"process_interruption_cycles_passed":3,"functional_run":41475172663,"functional_source":"ad4cf5983af12cd540cbbcfc87a9ecd5c0256007","apk_source":"0c65e5d3124bc4cef3b37833bf553e2ff04a1989","apk_sha256":apk_sha,"certificate_sha256":cert,"apk_payload_matches_final_test_build":True,"only_payload_difference":provenance,"performance_cases_completed":16,"performance_all_targets_met":True,"performance_artifacts":evidence}
+validation={"jvm":{"tests":16,"failures":0},"android":{"26":{"tests":99,"failures":0},"35":{"tests":99,"failures":0},"36":{"tests":99,"failures":0}},"upgrade_cycles_passed":3,"process_interruption_cycles_passed":3,"functional_run":41475172663,"functional_source":"ad4cf5983af12cd540cbbcfc87a9ecd5c0256007","apk_source":"0c65e5d3124bc4cef3b37833bf553e2ff04a1989","apk_sha256":apk_sha,"certificate_sha256":cert,"apk_payload_matches_final_test_build":True,"only_payload_difference":provenance,"excluded_jar_signing_entries":sorted(signing_entries),"performance_cases_completed":16,"performance_all_targets_met":True,"performance_artifacts":evidence}
 (ROOT/"validation-1.3.0.json").write_text(json.dumps(validation,indent=2)+"\n")
 summary={"validation":validation,"cases":[{k:c[k] for k in ("kind","nominal_mib","encrypted","records","database_bytes","old_median_ms","new_median_ms","improvement_percent")} | {"output_bytes":c["new"][0]["output_bytes"],"old_range_ms":[min(x["total_ms"] for x in c["old"]),max(x["total_ms"] for x in c["old"])],"new_range_ms":[min(x["total_ms"] for x in c["new"]),max(x["total_ms"] for x in c["new"])]} for c in cases]}
 print("RELEASE_EVIDENCE_JSON="+json.dumps(summary,ensure_ascii=False),flush=True)
