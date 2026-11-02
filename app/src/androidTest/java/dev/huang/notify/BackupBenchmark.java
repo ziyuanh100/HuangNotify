@@ -25,6 +25,7 @@ final class BackupBenchmark {
       for(String kind:new String[]{"text","images","many-short","fragmented"})for(int size:kind.equals("text")||kind.equals("images")?new int[]{10,50,99}:new int[]{10}){
         if(!selectedKind.isEmpty()&&(!kind.equals(selectedKind)||size!=selectedSize))continue;
         progress.accept("Preparing "+kind+" "+size);seed(c,kind,size);long[] counts=Store.IO.submit(()->Store.get(c).counts()).get();long dbBytes=c.getDatabasePath("notifications.db").length();
+        if(kind.equals("fragmented")&&dbBytes<80L*1024*1024)throw new AssertionError("Fragmented fixture did not retain a large physical database: "+dbBytes);
         for(boolean encrypted:new boolean[]{false,true}){
           JSONObject entry=new JSONObject().put("kind",kind).put("nominal_mib",size).put("encrypted",encrypted).put("records",counts[0]).put("database_bytes",dbBytes);JSONArray oldRuns=new JSONArray(),newRuns=new JSONArray();entry.put("old",oldRuns).put("new",newRuns);cases.put(entry);write(report,root);
           JSONObject oldWarm=measure(c,true,encrypted),newWarm=measure(c,false,encrypted);entry.put("first_old",oldWarm).put("first_new",newWarm);
@@ -66,7 +67,8 @@ final class BackupBenchmark {
   private static void checkpoint(Store s){try(android.database.Cursor c=s.getWritableDatabase().rawQuery("PRAGMA wal_checkpoint(TRUNCATE)",null)){c.moveToFirst();}}
   private static void seed(Context c,String kind,int size)throws Exception{
     Store.IO.submit(()->{
-      Store s=Store.get(c);android.database.sqlite.SQLiteDatabase db=s.getWritableDatabase();db.delete("records",null,null);db.delete("settings",null,null);s.pruneImages();checkpoint(s);db.execSQL("VACUUM");checkpoint(s);
+      Store s=Store.get(c);android.database.sqlite.SQLiteDatabase db=s.getWritableDatabase();db.delete("records",null,null);db.delete("settings",null,null);s.pruneImages();checkpoint(s);
+      if(kind.equals("fragmented"))db.execSQL("PRAGMA auto_vacuum=NONE");db.execSQL("VACUUM");checkpoint(s);
       String text=repeat('資',90000);int rows=kind.equals("fragmented")?193:size==10?19:size==50?97:193;
       NotificationImages.Attachment shared=kind.equals("many-short")?ImageStoreTest.picture(0xff146c59):null;
       db.beginTransaction();try{
