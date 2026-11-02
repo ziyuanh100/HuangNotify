@@ -21,7 +21,7 @@ public class Version130Test extends AndroidTestCase {
       File json=new File(dir,"old-readable.json");try(InputStream in=new FileInputStream(file.ready);OutputStream out=new FileOutputStream(json)){Legacy12BackupStreamCrypto.decrypt(in,out,"password123".toCharArray(),new java.util.concurrent.atomic.AtomicBoolean(),n->{});}
       try(Legacy12BackupArchive.Stage stage=Legacy12BackupArchive.read(json,new File(dir,"old.db"),new BackupTask())){assertEquals(1,stage.records);assertEquals(2,stage.versions);assertEquals(1,stage.images);}
       AutoBackup.Documents d=new AutoBackup.Documents(getContext(),Uri.parse("content://dev.huang.notify.testdocs/tree/root"));String id=d.create("tampered-ready.hnbk");
-      try{try(RandomAccessFile edit=new RandomAccessFile(file.ready,"rw")){edit.seek(45);edit.write(edit.read()^1);}try{BackupFiles.save(getContext(),file,Uri.parse(id),new BackupTask());fail("Mutated cached source was accepted");}catch(IOException expected){}}finally{d.delete(id);}
+      try{try(RandomAccessFile edit=new RandomAccessFile(file.ready,"rw")){edit.seek(45);int value=edit.read();edit.seek(45);edit.write(value^1);}try{BackupFiles.save(getContext(),file,Uri.parse(id),new BackupTask());fail("Mutated cached source was accepted");}catch(IOException expected){}}finally{d.delete(id);}
     }
   }
   public void testDateAndImagesCombineIncludingHistoricalImageAndStableOrdering()throws Exception{

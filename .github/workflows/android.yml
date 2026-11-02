@@ -81,6 +81,8 @@ jobs:
             adb install probe/build/outputs/apk/debug/probe-debug.apk
             ./gradlew :app:connectedDebugAndroidTest
             adb pull /data/local/tmp/huangnotify-ui-preview ui-preview
+            adb install -r "$RUNNER_TEMP/next.apk"
+            adb install -r "$RUNNER_TEMP/upgrade-tests.apk"
             adb shell am instrument -w -e phase interrupt-before dev.huang.notify.test/dev.huang.notify.UpgradeHarness > backup-interrupt-before.txt
             grep -q 'INSTRUMENTATION_CODE: -1' backup-interrupt-before.txt
             adb shell am force-stop dev.huang.notify
@@ -148,7 +150,7 @@ jobs:
           script: |
             adb install app/build/outputs/apk/debug/app-debug.apk
             adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-            adb shell am instrument -w -e phase benchmark dev.huang.notify.test/dev.huang.notify.UpgradeHarness > backup-performance.txt
+            adb shell am instrument -w -e phase benchmark dev.huang.notify.test/dev.huang.notify.UpgradeHarness | tee backup-performance.txt
             adb exec-out run-as dev.huang.notify cat files/backup-performance.json > backup-performance.json
             grep -q 'INSTRUMENTATION_CODE: -1' backup-performance.txt
       - uses: actions/upload-artifact@v4
