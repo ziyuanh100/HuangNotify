@@ -18,7 +18,7 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
         && node.isEnabled() && node.isClickable()) return node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK);
     for(int i=0;i<node.getChildCount();i++) {
       android.view.accessibility.AccessibilityNodeInfo child=node.getChild(i);
-   if(child!=null && confirmInstall(child)) return true;
+      if(child!=null && confirmInstall(child)) return true;
     }
     return false;
   }

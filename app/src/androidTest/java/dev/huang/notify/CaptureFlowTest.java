@@ -11,6 +11,8 @@ import java.util.concurrent.TimeUnit;
 @SuppressWarnings("deprecation")
 public class CaptureFlowTest extends InstrumentationTestCase {
   private static final String PROBE="dev.huang.notify.probe", COMPONENT="dev.huang.notify/dev.huang.notify.CaptureService";
+  private static final java.util.concurrent.atomic.AtomicInteger NEXT_ID=new java.util.concurrent.atomic.AtomicInteger(901);
+  private final int notificationId=NEXT_ID.getAndIncrement();
   private Context c; private boolean wasGranted; private String paused,excluded,listenerSetting,imageSetting;
   private String kind="screenshot";
   @Override protected void setUp() throws Exception {
@@ -95,12 +97,19 @@ public class CaptureFlowTest extends InstrumentationTestCase {
       List<Record> records=Store.IO.submit(()->Store.get(c).list("",PROBE,false,false,20)).get(5,TimeUnit.SECONDS);
       for(Record r:records) if(r.active==active && (id==null || id.equals(r.id))) return r;
       SystemClock.sleep(100);
-    } throw new AssertionError("Screenshot notification not recorded with active="+active+"; "+Store.error);
+    } throw new AssertionError("Probe notification not recorded with active="+active+", listener="+CaptureService.connected+", access="+PermissionGuide.hasAccess(c)+"; "+Store.error+"; events="+Store.IO.submit(()->Store.get(c).diagnosticEvents()).get());
   }
-  private void probe(boolean cancel) {
+  private void probe(boolean cancel) throws Exception {
+    // Each case owns a distinct OS key, and teardown waits until the source handled cancellation.
+    // A delayed cancellation from the preceding case must never remove the next case's notification.
+    String request=UUID.randomUUID().toString();java.util.concurrent.CountDownLatch completed=new java.util.concurrent.CountDownLatch(1);
+    android.content.BroadcastReceiver receiver=new android.content.BroadcastReceiver(){@Override public void onReceive(Context context,android.content.Intent result){if(request.equals(result.getStringExtra("request")))completed.countDown();}};
+    android.content.IntentFilter filter=new android.content.IntentFilter("dev.huang.notify.probe.COMPLETE");
+    if(Build.VERSION.SDK_INT>=33)c.registerReceiver(receiver,filter,Context.RECEIVER_EXPORTED);else c.registerReceiver(receiver,filter);
     android.content.Intent intent=new android.content.Intent().setClassName(PROBE,PROBE+".ProbeActivity")
-        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("id",901).putExtra("cancel",cancel).putExtra("kind",kind);
-    c.startActivity(intent);
+        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("id",notificationId).putExtra("cancel",cancel).putExtra("kind",kind).putExtra("request",request);
+    try{c.startActivity(intent);assertTrue("Probe did not acknowledge "+(cancel?"cancellation":"posting"),completed.await(10,TimeUnit.SECONDS));}
+    finally{c.unregisterReceiver(receiver);}
   }
   private String shell(String command) throws Exception {
     // A stalled shell must fail with its command instead of blocking the entire API 26 suite.

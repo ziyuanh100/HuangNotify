@@ -27,7 +27,7 @@ public final class ProbeActivity extends Activity {
         paint.setColor(0xff146c59); canvas.drawRect(0,160,480,280,paint); paint.setColor(0xffefc875); canvas.drawCircle(370,78,36,paint);
         paint.setColor(0xff172c24); paint.setTextSize(28); canvas.drawText("HuangNotify",28,62,paint);
         paint.setTextSize(18); canvas.drawText("Notification image fixture",28,96,paint);
-        builder.setContentTitle("截圖已儲存").setGroup("screenshot-only").setGroupSummary(true)
+        builder.setContentTitle("截圖已儲存").setGroup("screenshot-only-"+id).setGroupSummary(true)
             .setStyle(new Notification.BigPictureStyle().bigPicture(image));
       } else if("message-image".equals(kind) || "message-image-granted".equals(kind) || "denied-image".equals(kind)) {
         android.graphics.Bitmap picture=android.graphics.Bitmap.createBitmap(96,64,android.graphics.Bitmap.Config.ARGB_8888); picture.eraseColor(0xff146c59);
@@ -42,6 +42,8 @@ public final class ProbeActivity extends Activity {
           .setStyle(new Notification.BigTextStyle().bigText(text==null?"即使通知消失，這段內容仍會留下。":text));
       manager.notify(id,builder.build());
     }
+    String request=getIntent().getStringExtra("request");
+    if(request!=null)sendBroadcast(new android.content.Intent("dev.huang.notify.probe.COMPLETE").setPackage("dev.huang.notify").putExtra("request",request));
     finish();
   }
 }
