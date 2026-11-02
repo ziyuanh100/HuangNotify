@@ -609,10 +609,13 @@ public final class Store extends SQLiteOpenHelper {
   void diagnostic(String code,String pkg) {
     if("0".equals(setting("diagnostics","1")))return;
     ContentValues v=new ContentValues();long now=System.currentTimeMillis();v.put("time",now);v.put("code",code);v.put("pkg",pkg==null?"":pkg.substring(0,Math.min(255,pkg.length())));
-    SQLiteDatabase db=getWritableDatabase();db.insertOrThrow("diagnostics",null,v);
-    db.execSQL("DELETE FROM diagnostics WHERE id NOT IN(SELECT id FROM diagnostics ORDER BY id DESC LIMIT 200)");
-    if(code.equals("received")||code.equals("replayed"))putSetting("diagnostic_received",Long.toString(now));
-    if(code.equals("saved"))putSetting("diagnostic_saved",Long.toString(now));
+    SQLiteDatabase db=getWritableDatabase();db.beginTransaction();
+    try{db.insertOrThrow("diagnostics",null,v);
+      db.execSQL("DELETE FROM diagnostics WHERE id NOT IN(SELECT id FROM diagnostics ORDER BY id DESC LIMIT 200)");
+      if(code.equals("received")||code.equals("replayed"))putSetting("diagnostic_received",Long.toString(now));
+      if(code.equals("saved"))putSetting("diagnostic_saved",Long.toString(now));
+      db.setTransactionSuccessful();
+    }finally{db.endTransaction();}
   }
   JSONArray diagnosticEvents()throws Exception {
     JSONArray rows=new JSONArray();try(Cursor c=getReadableDatabase().rawQuery("SELECT time,code,pkg FROM diagnostics ORDER BY id DESC",null)){while(c.moveToNext())rows.put(new JSONObject().put("time",c.getLong(0)).put("code",c.getString(1)).put("package",c.getString(2)));}return rows;

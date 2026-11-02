@@ -75,13 +75,14 @@ final class BackupArchive {
   }
   static final class Stage implements AutoCloseable {
     final SQLiteDatabase db;final File file;long created;int format,records,versions,images;
-    Stage(File file){this.file=file;db=SQLiteDatabase.openOrCreateDatabase(file,null);db.execSQL("PRAGMA synchronous=NORMAL");
+    Stage(File file){this.file=file;db=SQLiteDatabase.openOrCreateDatabase(file,null);try{db.execSQL("PRAGMA synchronous=NORMAL");
       db.execSQL("CREATE TABLE records(ordinal INTEGER UNIQUE,id TEXT PRIMARY KEY,nkey TEXT,pkg TEXT,app TEXT,title TEXT,body TEXT,note TEXT,posted INTEGER,first_seen INTEGER,updated INTEGER,removed INTEGER,reason INTEGER,favorite INTEGER,image_status TEXT,has_images INTEGER,has_status INTEGER)");
       db.execSQL("CREATE TABLE versions(id TEXT PRIMARY KEY,owner INTEGER,seq INTEGER,time INTEGER,title TEXT,body TEXT,image_status TEXT,has_images INTEGER,has_status INTEGER)");
       db.execSQL("CREATE INDEX versions_owner ON versions(owner)");
       db.execSQL("CREATE TABLE images(hash TEXT PRIMARY KEY,data BLOB,width INTEGER,height INTEGER)");
       db.execSQL("CREATE TABLE refs(kind TEXT,owner TEXT,position INTEGER,hash TEXT,PRIMARY KEY(kind,owner,position))");db.execSQL("CREATE INDEX refs_hash ON refs(hash)");
       db.execSQL("CREATE TABLE settings(name TEXT PRIMARY KEY,value TEXT)");
+      }catch(RuntimeException e){db.close();throw e;}
     }
     List<String> refs(String kind,String owner){List<String> result=new ArrayList<>();try(Cursor c=db.rawQuery("SELECT hash FROM refs WHERE kind=? AND owner=? ORDER BY position",new String[]{kind,owner})){while(c.moveToNext())result.add(c.getString(0));}return result;}
     public void close(){if(db.isOpen())db.close();}
@@ -89,6 +90,7 @@ final class BackupArchive {
   static Stage read(File json,File database,BackupTask task)throws Exception {
     if(json.length()>BackupStreamCrypto.MAX_BYTES)throw invalid("備份超過 100 MiB");
     Stage stage=new Stage(database);boolean success=false;task.phase("檢查備份",json.length());
+    try {
     try(InputStream source=new BufferedInputStream(new FileInputStream(json));JsonReader r=new JsonReader(new TokenReader(new InputStreamReader(new FilterInputStream(source){long count;public int read(byte[] b,int o,int n)throws IOException{task.check();int got=super.read(b,o,n);if(got>0){count+=got;task.progress(count);}return got;}},StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT))))) {
       stage.db.beginTransaction();
       try {
@@ -107,9 +109,10 @@ final class BackupArchive {
         }
         r.endObject();if(r.peek()!=JsonToken.END_DOCUMENT)throw invalid("備份含多餘內容");
         if(!seen.containsAll(Arrays.asList("format","version","created","records","settings")) || (stage.format>=2)!=seen.contains("images"))throw invalid("備份缺少必要欄位或版本不符");
-        validateRelations(stage,task);stage.db.setTransactionSuccessful();success=true;
+        validateRelations(stage,task);stage.db.setTransactionSuccessful();
       } finally {stage.db.endTransaction();}
-      return stage;
+    }
+      success=true;return stage;
     } finally {if(!success)stage.close();}
   }
   private static String string(JsonReader r)throws IOException{if(r.peek()!=JsonToken.STRING)throw invalid("備份文字欄位格式錯誤");return r.nextString();}

@@ -18,7 +18,7 @@ final class BackupFiles {
       dir=new File(root,"op_"+UUID.randomUUID());if(!dir.mkdir())throw new IOException();
       input=new File(dir,"input.bin");plain=new File(dir,"plain.json");output=new File(dir,"output.hnbk");database=new File(dir,"stage.db");
     }
-    public void close(){if(stage!=null){stage.close();stage=null;}erase(dir);}
+    public void close(){try{if(stage!=null){stage.close();stage=null;}}finally{erase(dir);}}
   }
   static void erase(File file){File[] children=file.listFiles();if(children!=null)for(File child:children)erase(child);file.delete();}
   static void cleanStale(Context c){File[] dirs=new File(c.getCacheDir(),"backup-work").listFiles();if(dirs!=null)for(File dir:dirs)if(dir.getName().matches("op_[0-9a-f-]{36}")&&System.currentTimeMillis()-dir.lastModified()>86400000L)erase(dir);}
@@ -26,7 +26,7 @@ final class BackupFiles {
   static Session export(Context context,char[] password,BackupTask task)throws Exception {
     Session session=new Session(context);boolean success=false;File snapshot=new File(session.dir,"snapshot.db");
     try {
-      space(context,context.getDatabasePath("notifications.db").length());task.phase("準備備份",0);
+      task.check();File live=context.getDatabasePath("notifications.db");space(context,live.length()+new File(live.getPath()+"-wal").length());task.phase("準備備份",0);
       Store.IO.submit(()->{Store.get(context).snapshot(snapshot,task);return null;}).get();task.check();
       try(SQLiteDatabase db=SQLiteDatabase.openDatabase(snapshot.getAbsolutePath(),null,SQLiteDatabase.OPEN_READWRITE|SQLiteDatabase.NO_LOCALIZED_COLLATORS);OutputStream out=new BufferedOutputStream(new FileOutputStream(session.plain))) {BackupArchive.write(db,out,task);}
       SQLiteDatabase.deleteDatabase(snapshot);task.check();session.ready=session.plain;session.encrypted=password!=null;

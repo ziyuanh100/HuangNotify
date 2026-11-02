@@ -28,8 +28,15 @@ public class BackupUiTest extends ActivityInstrumentationTestCase2<MainActivity>
     }finally{release.countDown();}
   }
   public void testPickerCancelAllowsAnotherOperation()throws Exception{
-    main=getActivity();getInstrumentation().waitForIdleSync();Instrumentation.ActivityMonitor monitor=getInstrumentation().addMonitor(new IntentFilter(Intent.ACTION_OPEN_DOCUMENT),new Instrumentation.ActivityResult(Activity.RESULT_CANCELED,null),true);
-    try{getInstrumentation().runOnMainSync(()->main.backupScreen.chooseImport());getInstrumentation().waitForIdleSync();assertTrue(monitor.getHits()>0);getInstrumentation().runOnMainSync(()->main.backupScreen.exportDialog());getInstrumentation().waitForIdleSync();assertNotNull(dialog());assertTrue(dialog().isShowing());assertNotNull(find(dialog().getWindow().getDecorView(),"建立備份"));}
+    main=getActivity();getInstrumentation().waitForIdleSync();
+    IntentFilter filter=new IntentFilter(Intent.ACTION_OPEN_DOCUMENT);filter.addCategory(Intent.CATEGORY_OPENABLE);filter.addDataType("*/*");
+    Instrumentation.ActivityMonitor monitor=getInstrumentation().addMonitor(filter,new Instrumentation.ActivityResult(Activity.RESULT_CANCELED,null),true);
+    try{
+      getInstrumentation().runOnMainSync(()->main.backupScreen.chooseImport());getInstrumentation().waitForIdleSync();
+      assertTrue("Document picker was not intercepted",monitor.getHits()>0);
+      getInstrumentation().runOnMainSync(()->main.backupScreen.exportDialog());getInstrumentation().waitForIdleSync();
+      assertNotNull("Cancelled picker left backup busy",dialog());assertTrue(dialog().isShowing());assertNotNull(find(dialog().getWindow().getDecorView(),"建立備份"));
+    }
     finally{getInstrumentation().removeMonitor(monitor);}
   }
   public void testDiagnosticsAndStorageUseScrollableCustomDialogs()throws Exception{

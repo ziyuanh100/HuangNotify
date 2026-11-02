@@ -75,10 +75,12 @@ public class CaptureFlowTest extends InstrumentationTestCase {
     Store.IO.submit(()->Store.get(c).putSetting("save_images","0")).get();
     probe(false); Record saved=awaitRecord(true); assertEquals("disabled",saved.imageStatus); assertEquals(0,saved.imageCount);
   }
-  public void testDiagnosticsExplainPauseAndExcludedSource()throws Exception{
+  public void testDiagnosticsExplainPause()throws Exception{
     Store.IO.submit(()->{Store s=Store.get(c);s.putSetting("diagnostics","1");s.clearDiagnostics();s.putSetting("paused","1");}).get();
     probe(false);awaitDiagnostic("paused");assertTrue(Store.IO.submit(()->Store.get(c).list("",PROBE,false,false,10).isEmpty()).get());
-    probe(true);Store.IO.submit(()->{Store s=Store.get(c);s.putSetting("paused","0");s.putSetting("exclude:"+PROBE,"1");}).get();
+  }
+  public void testDiagnosticsExplainExcludedSource()throws Exception{
+    Store.IO.submit(()->{Store s=Store.get(c);s.putSetting("diagnostics","1");s.clearDiagnostics();s.putSetting("paused","0");s.putSetting("exclude:"+PROBE,"1");}).get();
     probe(false);awaitDiagnostic("excluded");assertTrue(Store.IO.submit(()->Store.get(c).list("",PROBE,false,false,10).isEmpty()).get());
   }
   private void awaitDiagnostic(String code)throws Exception{
