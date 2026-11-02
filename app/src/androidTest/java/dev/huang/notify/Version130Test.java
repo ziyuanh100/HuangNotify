@@ -39,6 +39,20 @@ public class Version130Test extends AndroidTestCase {
   public void testDiagnosticFilteringSequenceAndRingTruncation()throws Exception{
     long sequence=s.diagnosticSequence();for(int i=0;i<205;i++)Diagnostics.record(s,i%2==0?"received":"excluded","fixture.pkg");JSONArray rows=s.diagnosticEvents();assertEquals(200,rows.length());assertTrue(Diagnostics.truncated(rows,sequence));JSONObject row=rows.getJSONObject(0);assertTrue(Diagnostics.matches(row,"fixture.pkg",0,1));assertFalse(Diagnostics.matches(row,"wrong.pkg",0,0));assertFalse(Diagnostics.matches(row,"fixture.pkg",row.getLong("time")+1,0));assertTrue(Diagnostics.matches(rows.getJSONObject(1),"fixture.pkg",0,3));s.clearDiagnostics();assertTrue(s.diagnosticSequence()>sequence);
   }
+  public void testAutomaticCachedSaveFaultsKeepExistingBackups()throws Exception{
+    capture("fault","synthetic",null);try(BackupFiles.Session file=AutoBackup.IO.submit(()->BackupFiles.export(getContext(),null,new BackupTask())).get(20,TimeUnit.SECONDS)){
+      for(int mode=0;mode<3;mode++){
+        final int fault=mode;Map<String,byte[]> data=new HashMap<>();String prefix="HuangNotify_auto_fault_",old=prefix+"0000000000001_00000000-0000-0000-0000-000000000000.hnbk",name=prefix+"0000000000002_00000000-0000-0000-0000-000000000000.hnbk";data.put(old,new byte[]{1});BackupTask task=new BackupTask();
+        AutoBackup.Destination d=new AutoBackup.Destination(){
+          public String create(String name){data.put(name,new byte[0]);return name;}
+          public OutputStream write(String id){return new ByteArrayOutputStream(){public void write(byte[] b,int o,int n){if(fault==0)throw new SecurityException("permission revoked");super.write(b,o,n);if(fault==2)task.cancelled.set(true);}public void close()throws IOException{data.put(id,toByteArray());if(fault==1)throw new IOException("ENOSPC");}};}
+          public InputStream read(String id){return new ByteArrayInputStream(data.get(id));}public Map<String,String> files(){Map<String,String> result=new HashMap<>();for(String id:data.keySet())result.put(id,id);return result;}public void delete(String id){data.remove(id);}
+        };
+        try{AutoBackup.saveVerified(d,name,prefix,file,1,task);fail("Fault was accepted: "+fault);}catch(Exception expected){String error=BackupFiles.error(expected);assertTrue(error,fault==0?error.contains("權限"):fault==1?error.contains("空間"):error.contains("取消"));}
+        assertEquals(1,data.size());assertTrue(data.containsKey(old));
+      }
+    }
+  }
   public void testInterruptedCleanupPreservesLiveSessionAndPrunesOnlyOwnedDirectories()throws Exception{
     File root=new File(getContext().getCacheDir(),"backup-work");root.mkdirs();File abandoned=new File(root,"op_"+UUID.randomUUID()),other=new File(root,"user-file");assertTrue(abandoned.mkdir());assertTrue(other.mkdir());
     try(BackupFiles.Session live=new BackupFiles.Session(getContext())){BackupFiles.cleanInterrupted(getContext());assertFalse(abandoned.exists());assertTrue(live.dir.isDirectory());assertTrue(other.isDirectory());}finally{other.delete();}

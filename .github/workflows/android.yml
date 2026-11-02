@@ -81,6 +81,11 @@ jobs:
             adb install probe/build/outputs/apk/debug/probe-debug.apk
             ./gradlew :app:connectedDebugAndroidTest
             adb pull /data/local/tmp/huangnotify-ui-preview ui-preview
+            adb shell am instrument -w -e phase interrupt-before dev.huang.notify.test/dev.huang.notify.UpgradeHarness > backup-interrupt-before.txt
+            grep -q 'INSTRUMENTATION_CODE: -1' backup-interrupt-before.txt
+            adb shell am force-stop dev.huang.notify
+            adb shell am instrument -w -e phase interrupt-after dev.huang.notify.test/dev.huang.notify.UpgradeHarness > backup-interrupt-after.txt
+            grep -q 'INSTRUMENTATION_CODE: -1' backup-interrupt-after.txt
             adb uninstall dev.huang.notify || true
             adb uninstall dev.huang.notify.test || true
             adb install "$RUNNER_TEMP/previous.apk"
@@ -109,7 +114,9 @@ jobs:
         if: always()
         with:
           name: self-update-cycle-api-${{ matrix.api }}
-          path: upgrade-*
+          path: |
+            upgrade-*
+            backup-interrupt-*
 
   backup-performance:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[benchmark]')

@@ -40,22 +40,24 @@ final class BackupBenchmark {
   private static void write(File report,JSONObject root)throws Exception{try(Writer w=new OutputStreamWriter(new FileOutputStream(report),java.nio.charset.StandardCharsets.UTF_8)){w.write(root.toString(2));}}
   private static double median(JSONArray rows)throws Exception{double[] values=new double[rows.length()];for(int i=0;i<values.length;i++)values[i]=rows.getJSONObject(i).getDouble("total_ms");Arrays.sort(values);return values[values.length/2];}
   private static final class Memory implements AutoCloseable{
-    final AtomicBoolean running=new AtomicBoolean(true);volatile long heap,pss;final Thread thread;
-    Memory(){thread=new Thread(()->{while(running.get()){Runtime r=Runtime.getRuntime();heap=Math.max(heap,r.totalMemory()-r.freeMemory());pss=Math.max(pss,Debug.getPss()*1024L);try{Thread.sleep(100);}catch(InterruptedException e){return;}}},"backup-memory-sample");thread.setDaemon(true);thread.start();}
+    final AtomicBoolean running=new AtomicBoolean(true);volatile long heap,pss,temp;final Thread thread;
+    Memory(File root){thread=new Thread(()->{while(running.get()){Runtime r=Runtime.getRuntime();heap=Math.max(heap,r.totalMemory()-r.freeMemory());pss=Math.max(pss,Debug.getPss()*1024L);temp=Math.max(temp,directoryBytes(root));try{Thread.sleep(100);}catch(InterruptedException e){return;}}},"backup-memory-sample");thread.setDaemon(true);thread.start();}
     public void close()throws InterruptedException{running.set(false);thread.interrupt();thread.join(2000);}
   }
   private static JSONObject measure(Context c,boolean legacy,boolean encrypted)throws Exception{
     return AutoBackup.IO.submit(()->{
-      BackupTask task=new BackupTask();long start=System.nanoTime(),prepared,size,temp,saveStart;Map<String,Long> phases;Memory memory=new Memory();
+      BackupTask task=new BackupTask();long start=System.nanoTime(),prepared,size,temp,saveStart;Map<String,Long> phases;Map<String,Long> ioBefore=processIo();Memory memory=new Memory(new File(c.getCacheDir(),"backup-work"));
       AutoBackup.Documents docs=new AutoBackup.Documents(c,TREE);String id=docs.create("benchmark_"+UUID.randomUUID()+(encrypted?".hnbk":".hnjson"));
       try{
         if(legacy){try(Legacy12BackupFiles.Session s=Legacy12BackupFiles.export(c,encrypted?PASSWORD:null,task)){prepared=System.nanoTime();size=s.ready.length();temp=directoryBytes(s.dir);saveStart=System.nanoTime();Legacy12BackupFiles.save(c,s,Uri.parse(id),task);phases=task.timingsMillis();}}
         else {try(BackupFiles.Session s=BackupFiles.export(c,encrypted?PASSWORD:null,task)){prepared=System.nanoTime();size=s.ready.length();temp=directoryBytes(s.dir);saveStart=System.nanoTime();BackupFiles.save(c,s,Uri.parse(id),task);phases=task.timingsMillis();}}
         long end=System.nanoTime();memory.close();return new JSONObject().put("total_ms",(end-start)/1000000.0).put("prepare_ms",(prepared-start)/1000000.0).put("save_verify_ms",(end-saveStart)/1000000.0)
-          .put("output_bytes",size).put("ready_temp_bytes",temp).put("sampled_java_heap_bytes",memory.heap).put("sampled_pss_bytes",memory.pss).put("phases_ms",new JSONObject(phases));
+          .put("output_bytes",size).put("ready_temp_bytes",temp).put("sampled_java_heap_bytes",memory.heap).put("sampled_pss_bytes",memory.pss).put("sampled_temp_peak_bytes",memory.temp).put("process_io_delta",ioDelta(ioBefore,processIo())).put("phases_ms",new JSONObject(phases));
       }finally{memory.close();docs.delete(id);}
     }).get(10,TimeUnit.MINUTES);
   }
+  private static Map<String,Long> processIo(){Map<String,Long> values=new LinkedHashMap<>();try(BufferedReader reader=new BufferedReader(new FileReader("/proc/self/io"))){String line;while((line=reader.readLine())!=null){String[] parts=line.split(":");if(parts.length==2&&Arrays.asList("rchar","wchar","read_bytes","write_bytes").contains(parts[0]))values.put(parts[0],Long.parseLong(parts[1].trim()));}}catch(Exception ignored){}return values;}
+  private static JSONObject ioDelta(Map<String,Long> before,Map<String,Long> after)throws Exception{JSONObject result=new JSONObject();for(String key:before.keySet())if(after.containsKey(key))result.put(key,after.get(key)-before.get(key));if(result.length()==0)result.put("unavailable",true);return result;}
   private static long directoryBytes(File f){if(f.isFile())return f.length();long count=0;File[] children=f.listFiles();if(children!=null)for(File child:children)count+=directoryBytes(child);return count;}
   private static String repeat(char ch,int n){char[] c=new char[n];Arrays.fill(c,ch);return new String(c);}
   private static void checkpoint(Store s){try(android.database.Cursor c=s.getWritableDatabase().rawQuery("PRAGMA wal_checkpoint(TRUNCATE)",null)){c.moveToFirst();}}
