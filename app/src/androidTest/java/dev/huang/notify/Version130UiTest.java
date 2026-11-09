@@ -3,6 +3,7 @@ package dev.huang.notify;
 import android.app.*;
 import android.content.*;
 import android.content.res.Configuration;
+import android.graphics.Rect;
 import android.os.*;
 import android.test.ActivityInstrumentationTestCase2;
 import android.view.*;
@@ -100,11 +101,55 @@ public class Version130UiTest extends ActivityInstrumentationTestCase2<MainActiv
     AppDialog.Toggle enabled=toggle(dialog().getWindow().getDecorView());assertNotNull(enabled);getInstrumentation().runOnMainSync(enabled::performClick);Store.IO.submit(()->{}).get();getInstrumentation().waitForIdleSync();
     assertEquals(0,Store.IO.submit(()->Store.get(main).diagnosticEvents().length()).get().intValue());assertTrue(main.getSharedPreferences("diagnostic_test",0).getAll().isEmpty());
   }
-  public void testDark200PercentDateAndDiagnosticActionsRemainReachable()throws Exception{
-    Context c=getInstrumentation().getTargetContext();shell("cmd uimode night yes");shell("settings put system font_scale 2.0");long deadline=SystemClock.elapsedRealtime()+8000;
-    while(SystemClock.elapsedRealtime()<deadline&&(c.getResources().getConfiguration().fontScale<1.9f||(c.getResources().getConfiguration().uiMode&Configuration.UI_MODE_NIGHT_MASK)!=Configuration.UI_MODE_NIGHT_YES)){getInstrumentation().waitForIdleSync();SystemClock.sleep(100);}
-    main=getActivity();getInstrumentation().waitForIdleSync();assertTrue(main.getResources().getConfiguration().fontScale>=1.9f);getInstrumentation().runOnMainSync(main::dateFilterDialog);getInstrumentation().waitForIdleSync();AppDialog date=dialog();AppDialog.Toggle choice=toggle(date.getWindow().getDecorView());TextView mark=(TextView)choice.getChildAt(1);android.graphics.Paint.FontMetricsInt fm=mark.getPaint().getFontMetricsInt();assertTrue("Scaled checkmark was clipped vertically",mark.getHeight()>=fm.bottom-fm.top);assertTrue("Scaled checkmark was clipped horizontally",mark.getWidth()>=mark.getPaint().measureText(mark.getText().toString()));ScrollView scroll=scroll(date.getWindow().getDecorView());assertNotNull(scroll);getInstrumentation().runOnMainSync(()->scroll.fullScroll(View.FOCUS_DOWN));getInstrumentation().waitForIdleSync();android.graphics.Rect visible=new android.graphics.Rect();assertTrue(date.getButton(AppDialog.BUTTON_POSITIVE).getGlobalVisibleRect(visible));capture("date-dark-200.png");
-    getInstrumentation().runOnMainSync(()->{AppDialog.dismissAll(main);Diagnostics.show(main);});Store.IO.submit(()->{}).get();getInstrumentation().waitForIdleSync();AppDialog diagnostic=dialog();for(int which:new int[]{AppDialog.BUTTON_POSITIVE,AppDialog.BUTTON_NEGATIVE,AppDialog.BUTTON_NEUTRAL})assertTrue(diagnostic.getButton(which).getGlobalVisibleRect(visible));capture("diagnostics-dark-200.png");
+  public void testDark200PercentDateAndDiagnosticActionsRemainReachable() throws Exception {
+    Context context = getInstrumentation().getTargetContext();
+    shell("cmd uimode night yes");
+    shell("settings put system font_scale 2.0");
+    long deadline = SystemClock.elapsedRealtime() + 8000;
+    while (SystemClock.elapsedRealtime() < deadline
+        && (context.getResources().getConfiguration().fontScale < 1.9f
+            || (context.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                != Configuration.UI_MODE_NIGHT_YES)) {
+      getInstrumentation().waitForIdleSync();
+      SystemClock.sleep(100);
+    }
+    main = getActivity();
+    awaitRows(2);
+    assertTrue(main.getResources().getConfiguration().fontScale >= 1.9f);
+    Rect visible = new Rect();
+    assertTrue(main.getWindow().getDecorView().findViewWithTag("floating_nav").getGlobalVisibleRect(visible));
+    capture("glass-dark-200.png");
+
+    getInstrumentation().runOnMainSync(main::dateFilterDialog);
+    getInstrumentation().waitForIdleSync();
+    AppDialog date = dialog();
+    AppDialog.Toggle choice = toggle(date.getWindow().getDecorView());
+    View mark = choice.getChildAt(1);
+    int size = new Ui(main).d(24);
+    assertEquals("Large text should leave space for the full selection mark", size, mark.getWidth());
+    assertEquals(size, mark.getHeight());
+    android.view.accessibility.AccessibilityNodeInfo radio = choice.createAccessibilityNodeInfo();
+    assertEquals("android.widget.RadioButton", radio.getClassName().toString());
+    assertTrue(radio.isCheckable());
+    assertTrue(radio.isChecked());
+    ScrollView dateScroll = scroll(date.getWindow().getDecorView());
+    assertNotNull(dateScroll);
+    getInstrumentation().runOnMainSync(() -> dateScroll.fullScroll(View.FOCUS_DOWN));
+    getInstrumentation().waitForIdleSync();
+    assertTrue(date.getButton(AppDialog.BUTTON_POSITIVE).getGlobalVisibleRect(visible));
+    capture("date-dark-200.png");
+
+    getInstrumentation().runOnMainSync(() -> {
+      AppDialog.dismissAll(main);
+      Diagnostics.show(main);
+    });
+    Store.IO.submit(() -> {}).get();
+    getInstrumentation().waitForIdleSync();
+    AppDialog diagnostic = dialog();
+    for (int which : new int[]{AppDialog.BUTTON_POSITIVE, AppDialog.BUTTON_NEGATIVE, AppDialog.BUTTON_NEUTRAL}) {
+      assertTrue(diagnostic.getButton(which).getGlobalVisibleRect(visible));
+    }
+    capture("diagnostics-dark-200.png");
   }
   private void awaitRows(int count)throws Exception{Field f=MainActivity.class.getDeclaredField("rows");f.setAccessible(true);Field busy=MainActivity.class.getDeclaredField("refreshing");busy.setAccessible(true);long deadline=SystemClock.elapsedRealtime()+8000;while(SystemClock.elapsedRealtime()<deadline){Store.IO.submit(()->{}).get();getInstrumentation().waitForIdleSync();if(!busy.getBoolean(main)&&((List<?>)f.get(main)).size()==count)return;SystemClock.sleep(50);}fail("Unexpected filtered row count");}
   private void awaitText(String text)throws Exception{long deadline=SystemClock.elapsedRealtime()+8000;while(SystemClock.elapsedRealtime()<deadline){Store.IO.submit(()->{}).get();getInstrumentation().waitForIdleSync();if(dialog()!=null&&find(dialog().getWindow().getDecorView(),text)!=null)return;SystemClock.sleep(50);}fail("Missing UI text: "+text);}

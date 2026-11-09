@@ -4,7 +4,10 @@ import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.DialogInterface;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
@@ -82,12 +85,21 @@ public final class AppDialog extends Dialog {
     }
     if (spec.positive == null && spec.negative == null && spec.neutral == null) spec.negative = "關閉";
     u.gap(card, 14);
-    horizontalActions=spec.expanded&&getContext().getResources().getConfiguration().fontScale<1.6f;
-    LinearLayout actions=spec.expanded?(horizontalActions?u.row():u.column()):card;
-    if(spec.expanded) card.addView(actions,new LinearLayout.LayoutParams(-1,-2));
-    action(actions, BUTTON_POSITIVE, spec.positive, spec.positiveListener, true);
-    action(actions, BUTTON_NEUTRAL, spec.neutral, spec.neutralListener, false);
-    action(actions, BUTTON_NEGATIVE, spec.negative, spec.negativeListener, false);
+    android.content.res.Configuration configuration = getContext().getResources().getConfiguration();
+    boolean hasPair = spec.positive != null && spec.negative != null && spec.neutral == null;
+    horizontalActions = configuration.fontScale < 1.4f && configuration.screenWidthDp >= 350
+        && (spec.expanded || hasPair);
+    LinearLayout actions = horizontalActions ? u.row() : u.column();
+    card.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+    if (horizontalActions) {
+      action(actions, BUTTON_NEGATIVE, spec.negative, spec.negativeListener, false);
+      action(actions, BUTTON_NEUTRAL, spec.neutral, spec.neutralListener, false);
+      action(actions, BUTTON_POSITIVE, spec.positive, spec.positiveListener, true);
+    } else {
+      action(actions, BUTTON_POSITIVE, spec.positive, spec.positiveListener, true);
+      action(actions, BUTTON_NEUTRAL, spec.neutral, spec.neutralListener, false);
+      action(actions, BUTTON_NEGATIVE, spec.negative, spec.negativeListener, false);
+    }
     ScrollView scroll = new ScrollView(getContext()) {
       @Override protected void onMeasure(int width, int height) {
         int cap = (int) (getResources().getDisplayMetrics().heightPixels * .88);
@@ -126,9 +138,14 @@ public final class AppDialog extends Dialog {
       button.setTextColor(u.dark ? 0xff401b18 : Color.WHITE);
     }
     button.setOnClickListener(v -> { dismiss(); if (listener != null) listener.onClick(this, which); });
-    LinearLayout.LayoutParams params=horizontalActions?new LinearLayout.LayoutParams(0,-2,1):new LinearLayout.LayoutParams(-1,-2);
-    if(horizontalActions) params.setMargins(u.d(2),0,u.d(2),0);
-    body.addView(button,params); if(!horizontalActions) u.gap(body,8); buttons.put(which,button);
+    LinearLayout.LayoutParams params = horizontalActions
+        ? new LinearLayout.LayoutParams(0, -2, 1) : new LinearLayout.LayoutParams(-1, -2);
+    if (body.getChildCount() > 0) {
+      if (horizontalActions) params.setMarginStart(u.d(8));
+      else params.topMargin = u.d(8);
+    }
+    body.addView(button, params);
+    buttons.put(which, button);
   }
   public TextView getButton(int which) { return buttons.get(which); }
 
@@ -153,42 +170,113 @@ public final class AppDialog extends Dialog {
     public AppDialog show() { AppDialog d = create(); d.show(); return d; }
   }
 
-  /** Custom checkable card with native accessibility semantics. */
+  /** The entire row is a native-accessible choice with a fixed-size control. */
   public static final class Toggle extends LinearLayout implements Checkable {
     private final Ui u;
-    private final TextView label, mark;
-    private boolean checked;
+    private final TextView label;
+    private final ChoiceMark mark;
     private final boolean radio;
+    private boolean checked;
+
     public Toggle(Context context) { this(context, false); }
+
     Toggle(Context context, boolean radio) {
-      super(context); this.radio = radio; u = new Ui(context);
-      setOrientation(HORIZONTAL); setGravity(Gravity.CENTER_VERTICAL); setMinimumHeight(u.d(56));
-      setPadding(u.d(14), u.d(14), u.d(14), u.d(14)); setFocusable(true); setClickable(true);
-      label = u.text("", 15, u.ink, false); label.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+      super(context);
+      this.radio = radio;
+      u = new Ui(context);
+      setOrientation(HORIZONTAL);
+      setGravity(Gravity.CENTER_VERTICAL);
+      setMinimumHeight(u.d(56));
+      setPaddingRelative(u.d(14), u.d(11), u.d(14), u.d(11));
+      setFocusable(true);
+      setClickable(true);
+
+      label = u.text("", 15, u.ink, false);
+      label.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
       addView(label, new LayoutParams(0, -2, 1));
-      mark = u.text("", 20, u.accent, true); mark.setGravity(Gravity.CENTER); mark.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
-      int markSide=u.d(Math.max(32,28*getResources().getConfiguration().fontScale));mark.setMinHeight(markSide);
-      addView(mark, new LayoutParams(markSide, -2));
-      setOnClickListener(v -> toggle()); setChecked(false);
+      mark = new ChoiceMark(context);
+      mark.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+      LayoutParams markLayout = new LayoutParams(u.d(24), u.d(24));
+      markLayout.setMarginStart(u.d(12));
+      addView(mark, markLayout);
+      setOnClickListener(v -> toggle());
+      setChecked(false);
     }
-    public void setText(String text) { label.setText(text); setContentDescription(text); }
+
+    public void setText(String text) {
+      label.setText(text);
+      setContentDescription(text);
+    }
+
     public void setTextColor(int color) { label.setTextColor(color); }
+
     void setIcon(Drawable icon) {
       icon.setBounds(0, 0, u.d(28), u.d(28));
       label.setCompoundDrawablePadding(u.d(10));
       label.setCompoundDrawablesRelative(icon, null, null, null);
     }
+
+    @Override public void setEnabled(boolean enabled) {
+      super.setEnabled(enabled);
+      setAlpha(enabled ? 1f : .55f);
+    }
+
     @Override public boolean isChecked() { return checked; }
     @Override public void toggle() { setChecked(!checked); }
+
     @Override public void setChecked(boolean value) {
-      checked = value; mark.setText(value ? "✓" : radio ? "○" : "□");
-      u.ripple(this, value ? u.pale : u.bg, 16);
+      if (checked == value && getBackground() != null) return;
+      checked = value;
+      setBackground(u.rippleDrawable(u.outline(value ? u.pale : u.bg, 16), 16, false));
+      mark.invalidate();
       sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
     }
+
+    @Override public CharSequence getAccessibilityClassName() {
+      return radio ? "android.widget.RadioButton" : "android.widget.CheckBox";
+    }
+
     @Override public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
       super.onInitializeAccessibilityNodeInfo(info);
-      info.setClassName(radio ? "android.widget.RadioButton" : "android.widget.CheckBox");
-      info.setCheckable(true); info.setChecked(checked);
+      info.setClassName(getAccessibilityClassName());
+      info.setCheckable(true);
+      info.setChecked(checked);
+    }
+
+    private final class ChoiceMark extends View {
+      private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+      private final Path check = new Path();
+
+      ChoiceMark(Context context) { super(context); }
+
+      @Override protected void onDraw(Canvas canvas) {
+        float x = getWidth() / 2f, y = getHeight() / 2f, radius = u.d(9.5f);
+        paint.setColor(checked ? u.accent : u.muted);
+        paint.setStrokeWidth(u.d(1.6f));
+        paint.setStyle(Paint.Style.STROKE);
+        if (radio) {
+          canvas.drawCircle(x, y, radius, paint);
+          if (checked) {
+            paint.setStyle(Paint.Style.FILL);
+            canvas.drawCircle(x, y, u.d(4.5f), paint);
+          }
+          return;
+        }
+        if (checked) paint.setStyle(Paint.Style.FILL);
+        canvas.drawRoundRect(x - radius, y - radius, x + radius, y + radius,
+            u.d(4), u.d(4), paint);
+        if (checked) {
+          paint.setColor(u.onAccent);
+          paint.setStyle(Paint.Style.STROKE);
+          paint.setStrokeCap(Paint.Cap.ROUND);
+          paint.setStrokeJoin(Paint.Join.ROUND);
+          check.rewind();
+          check.moveTo(x - u.d(4.5f), y);
+          check.lineTo(x - u.d(1.5f), y + u.d(3));
+          check.lineTo(x + u.d(4.5f), y - u.d(3.5f));
+          canvas.drawPath(check, paint);
+        }
+      }
     }
   }
 }

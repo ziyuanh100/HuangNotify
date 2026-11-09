@@ -85,7 +85,8 @@ public class ImageUiTest extends ActivityInstrumentationTestCase2<MainActivity> 
     main=getActivity(); getInstrumentation().waitForIdleSync(); View settings=find(main.getWindow().getDecorView(),"設定");
     getInstrumentation().runOnMainSync(()->((View)settings.getParent()).performClick()); Store.IO.submit(()->{}).get(); getInstrumentation().waitForIdleSync();
     RecordSwitch control=(RecordSwitch)description(main.getWindow().getDecorView(),"保存通知圖片"); assertNotNull(control); assertTrue(control.isChecked());
-    getInstrumentation().runOnMainSync(()->control.performClick()); Store.IO.submit(()->{}).get(); getInstrumentation().waitForIdleSync();
+    getInstrumentation().runOnMainSync(() -> assertTrue(((View) control.getParent()).performClick()));
+    Store.IO.submit(()->{}).get(); getInstrumentation().waitForIdleSync();
     assertEquals("0",Store.IO.submit(()->Store.get(main).setting("save_images","1")).get()); assertNotNull(Store.IO.submit(()->Store.get(main).image(picture.hash)).get()); capture("image-setting.png");
   }
   private void awaitImage() throws Exception {

@@ -1,5 +1,6 @@
 package dev.huang.notify;
 
+import android.graphics.Rect;
 import android.test.ActivityInstrumentationTestCase2;
 import android.view.View;
 import android.view.ViewGroup;
@@ -21,17 +22,42 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
   public void testNavigationAndEmptyState() throws Exception {
     MainActivity activity = getActivity();
     getInstrumentation().waitForIdleSync();
-    assertNotNull(find(activity.getWindow().getDecorView(), "通知紀錄"));
-    View settings = find(activity.getWindow().getDecorView(), "設定");
+    View decor = activity.getWindow().getDecorView();
+    assertNotNull(find(decor, "通知紀錄"));
+    View nav = decor.findViewWithTag("floating_nav");
+    assertNotNull(nav);
+    assertTrue(nav.findViewWithTag("nav_records").isSelected());
+    View settings = find(decor, "設定");
     assertNotNull(settings);
     getInstrumentation().runOnMainSync(() -> ((View) settings.getParent()).performClick());
     getInstrumentation().waitForIdleSync();
-    assertNotNull(find(activity.getWindow().getDecorView(), "偏好設定"));
-    assertNotNull(find(activity.getWindow().getDecorView(), "建立備份"));
-    View star = find(activity.getWindow().getDecorView(), "收藏");
+    assertSame(nav, decor.findViewWithTag("floating_nav"));
+    assertTrue(nav.findViewWithTag("nav_settings").isSelected());
+    assertNotNull(find(decor, "偏好設定"));
+    assertNotNull(find(decor, "建立備份"));
+
+    Rect navBounds = new Rect(), hostBounds = new Rect(), scrollBounds = new Rect();
+    ScrollView scroll = decor.findViewWithTag("settings_scroll");
+    assertTrue(nav.getGlobalVisibleRect(navBounds));
+    assertTrue(((View) nav.getParent()).getGlobalVisibleRect(hostBounds));
+    assertTrue(scroll.getGlobalVisibleRect(scrollBounds));
+    assertTrue("The navigation should float in from both edges", navBounds.left > hostBounds.left
+        && navBounds.right < hostBounds.right && navBounds.bottom < hostBounds.bottom);
+    assertTrue("The page should scroll behind the navigation", scrollBounds.bottom > navBounds.top);
+    capture("glass-settings.png");
+    getInstrumentation().runOnMainSync(() -> scroll.scrollTo(0, scroll.getChildAt(0).getHeight()));
+    getInstrumentation().waitForIdleSync();
+    Rect lastSetting = new Rect();
+    View privacy = find(decor, "隱私與記錄範圍");
+    assertNotNull(privacy);
+    assertTrue(privacy.getGlobalVisibleRect(lastSetting));
+    assertTrue("The last setting should clear the floating navigation", lastSetting.bottom <= navBounds.top);
+
+    View star = find(decor, "收藏");
     getInstrumentation().runOnMainSync(() -> ((View) star.getParent()).performClick());
     getInstrumentation().waitForIdleSync();
-    assertNotNull(find(activity.getWindow().getDecorView(), "收藏通知"));
+    assertTrue(nav.findViewWithTag("nav_favorites").isSelected());
+    assertNotNull(find(decor, "收藏通知"));
   }
 
   public void testRecordingSwitchPersistsAcrossPages() throws Exception {

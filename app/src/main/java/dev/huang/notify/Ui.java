@@ -171,7 +171,7 @@ final class Ui {
     l.addView(v, new LinearLayout.LayoutParams(1, d(height)));
   }
 
-  View icon(String name, int color) {
+  Glyph icon(String name, int color) {
     return new Glyph(context, name, color);
   }
 
@@ -179,13 +179,19 @@ final class Ui {
     final String name;
     final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     final Path path = new Path();
-    final int color;
+    private int color;
 
     Glyph(Context c, String n, int col) {
       super(c);
       name = n;
       color = col;
       setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+    }
+
+    void setColor(int value) {
+      if (color == value) return;
+      color = value;
+      invalidate();
     }
 
     @Override
