@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
@@ -47,13 +48,13 @@ public final class AppDialog extends Dialog {
     super.onCreate(state);
     requestWindowFeature(Window.FEATURE_NO_TITLE);
     LinearLayout card = u.column();
-    card.setPadding(u.d(20), u.d(12), u.d(20), u.d(20));
-    card.setBackground(u.shape(u.surface, 28));
+    card.setPadding(u.d(20), u.d(12), u.d(20), u.d(14));
+    card.setBackground(u.outline(u.surface, 28));
     View handle = new View(getContext()); handle.setBackground(u.shape(u.line, 3));
     LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(u.d(36), u.d(4));
-    hp.gravity = Gravity.CENTER_HORIZONTAL; hp.bottomMargin = u.d(20); card.addView(handle, hp);
+    hp.gravity = Gravity.CENTER_HORIZONTAL; hp.bottomMargin = u.d(13); card.addView(handle, hp);
     TextView title = u.text(spec.title, 22, u.ink, true);
-    if (android.os.Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
+    u.heading(title);
     card.addView(title); u.gap(card, 14);
     if (spec.message != null) {
       TextView message = u.text(spec.message, 15, u.muted, false); message.setLineSpacing(u.d(4), 1);
@@ -120,9 +121,9 @@ public final class AppDialog extends Dialog {
   private void action(LinearLayout body, int which, String label, DialogInterface.OnClickListener listener, boolean primary) {
     if (label == null) return;
     TextView button = u.button(label, primary);
-    if (primary && (label.equals("刪除") || label.equals("清除"))) {
-      u.ripple(button, u.dark ? 0xffe7a09b : 0xffa73532, 16);
-      button.setTextColor(u.dark ? 0xff35100e : Color.WHITE);
+    if (primary && (label.equals("刪除") || label.equals("清除") || label.equals("確認清除"))) {
+      u.ripple(button, u.danger, 16);
+      button.setTextColor(u.dark ? 0xff401b18 : Color.WHITE);
     }
     button.setOnClickListener(v -> { dismiss(); if (listener != null) listener.onClick(this, which); });
     LinearLayout.LayoutParams params=horizontalActions?new LinearLayout.LayoutParams(0,-2,1):new LinearLayout.LayoutParams(-1,-2);
@@ -155,7 +156,6 @@ public final class AppDialog extends Dialog {
   /** Custom checkable card with native accessibility semantics. */
   public static final class Toggle extends LinearLayout implements Checkable {
     private final Ui u;
-  private boolean horizontalActions;
     private final TextView label, mark;
     private boolean checked;
     private final boolean radio;
@@ -173,6 +173,11 @@ public final class AppDialog extends Dialog {
     }
     public void setText(String text) { label.setText(text); setContentDescription(text); }
     public void setTextColor(int color) { label.setTextColor(color); }
+    void setIcon(Drawable icon) {
+      icon.setBounds(0, 0, u.d(28), u.d(28));
+      label.setCompoundDrawablePadding(u.d(10));
+      label.setCompoundDrawablesRelative(icon, null, null, null);
+    }
     @Override public boolean isChecked() { return checked; }
     @Override public void toggle() { setChecked(!checked); }
     @Override public void setChecked(boolean value) {

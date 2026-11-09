@@ -36,6 +36,60 @@ public class Version130UiTest extends ActivityInstrumentationTestCase2<MainActiv
     Instrumentation.ActivityMonitor monitor=getInstrumentation().addMonitor(MainActivity.class.getName(),null,false);try{getInstrumentation().runOnMainSync(main::recreate);main=(MainActivity)getInstrumentation().waitForMonitorWithTimeout(monitor,10000);assertNotNull(main);getInstrumentation().waitForIdleSync();awaitRows(1);}finally{getInstrumentation().removeMonitor(monitor);}
     assertNotNull(find(main.getWindow().getDecorView(),"有圖片 ✓"));View clear=find(main.getWindow().getDecorView(),"清除篩選");getInstrumentation().runOnMainSync(clear::performClick);awaitRows(2);assertNotNull(find(main.getWindow().getDecorView(),"所有日期 ▾"));
   }
+  public void testTimelineGroupsDatesAndKeepsSearchReachable() throws Exception {
+    Context context = getInstrumentation().getTargetContext();
+    Store.IO.submit(() -> {
+      Store store = Store.get(context);
+      java.time.LocalDate today = java.time.LocalDate.now();
+      java.time.ZoneId zone = java.time.ZoneId.systemDefault();
+      ContentValues firstSeen = new ContentValues();
+      firstSeen.put("first_seen", today.minusDays(1).atTime(12, 0).atZone(zone).toInstant().toEpochMilli());
+      store.getWritableDatabase().update("records", firstSeen, null, null);
+      for (int i = 0; i < 18; i++) {
+        store.capture("timeline-" + i, "com.android.settings", "系統設定", "範例通知 " + (i + 1),
+            "這是一則用來檢查通知時間軸與搜尋操作的範例。", i + 1);
+      }
+      firstSeen.put("first_seen", today.atTime(9, 30).atZone(zone).toInstant().toEpochMilli());
+      store.getWritableDatabase().update("records", firstSeen, "pkg=?", new String[]{"com.android.settings"});
+    }).get(10, TimeUnit.SECONDS);
+
+    main = getActivity();
+    awaitRows(20);
+    View decor = main.getWindow().getDecorView();
+    EditText search = hint(decor, "搜尋通知、App 或備註");
+    assertNotNull(search);
+    ListView list = timeline(decor);
+    assertNotNull(list);
+    getInstrumentation().runOnMainSync(() -> {
+      ListAdapter adapter = list.getAdapter();
+      int first = list.getHeaderViewsCount();
+      View card = adapter.getView(first, null, list);
+      View heading = contains(card, "今天 ·");
+      assertNotNull(heading);
+      assertEquals(View.VISIBLE, heading.getVisibility());
+      adapter.getView(first + 1, card, list);
+      assertEquals(View.GONE, heading.getVisibility());
+      adapter.getView(first + 18, card, list);
+      assertNotNull(contains(card, "昨天 ·"));
+    });
+    capture("timeline-light.png");
+
+    getInstrumentation().runOnMainSync(() -> list.setSelectionFromTop(list.getHeaderViewsCount() + 6, 0));
+    getInstrumentation().waitForIdleSync();
+    assertTrue(list.getFirstVisiblePosition() > list.getHeaderViewsCount());
+    assertTrue(search.getGlobalVisibleRect(new android.graphics.Rect()));
+    assertTrue(find(decor, "所有日期 ▾").getGlobalVisibleRect(new android.graphics.Rect()));
+    capture("timeline-scrolled.png");
+
+    getInstrumentation().runOnMainSync(() -> search.setText("純文字紀錄"));
+    awaitRows(1);
+    assertSame(search, hint(decor, "搜尋通知、App 或備註"));
+    ArrayList<View> clear = new ArrayList<>();
+    decor.findViewsWithText(clear, "清除搜尋", View.FIND_VIEWS_WITH_CONTENT_DESCRIPTION);
+    assertEquals(1, clear.size());
+    getInstrumentation().runOnMainSync(clear.get(0)::performClick);
+    awaitRows(20);
+  }
   public void testGuidedDiagnosticSourceResultAndTimeWindow()throws Exception{
     main=getActivity();getInstrumentation().waitForIdleSync();getInstrumentation().runOnMainSync(()->Diagnostics.show(main));awaitText("開始新的通知測試");
     getInstrumentation().runOnMainSync(()->find(dialog().getWindow().getDecorView(),"開始新的通知測試").performClick());Store.IO.submit(()->{}).get();getInstrumentation().waitForIdleSync();
@@ -59,6 +113,17 @@ public class Version130UiTest extends ActivityInstrumentationTestCase2<MainActiv
   private EditText hint(View v,String text){if(v instanceof EditText&&text.contentEquals(((EditText)v).getHint()))return (EditText)v;if(v instanceof ViewGroup)for(int i=0;i<((ViewGroup)v).getChildCount();i++){EditText r=hint(((ViewGroup)v).getChildAt(i),text);if(r!=null)return r;}return null;}
   private AppDialog.Toggle toggle(View v){if(v instanceof AppDialog.Toggle)return (AppDialog.Toggle)v;if(v instanceof ViewGroup)for(int i=0;i<((ViewGroup)v).getChildCount();i++){AppDialog.Toggle r=toggle(((ViewGroup)v).getChildAt(i));if(r!=null)return r;}return null;}
   private ScrollView scroll(View v){if(v instanceof ScrollView)return (ScrollView)v;if(v instanceof ViewGroup)for(int i=0;i<((ViewGroup)v).getChildCount();i++){ScrollView r=scroll(((ViewGroup)v).getChildAt(i));if(r!=null)return r;}return null;}
+  private ListView timeline(View view) {
+    if (view instanceof ListView) return (ListView) view;
+    if (view instanceof ViewGroup) {
+      ViewGroup group = (ViewGroup) view;
+      for (int i = 0; i < group.getChildCount(); i++) {
+        ListView list = timeline(group.getChildAt(i));
+        if (list != null) return list;
+      }
+    }
+    return null;
+  }
   private void shell(String command)throws Exception{try(ParcelFileDescriptor fd=getInstrumentation().getUiAutomation().executeShellCommand(command);InputStream in=new FileInputStream(fd.getFileDescriptor())){byte[] b=new byte[1024];while(in.read(b)!=-1){}}}
   private void capture(String name)throws Exception{shell("mkdir -p /data/local/tmp/huangnotify-ui-preview");shell("screencap -p /data/local/tmp/huangnotify-ui-preview/"+name);}
 }

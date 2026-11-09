@@ -95,7 +95,10 @@ public class ImageUiTest extends ActivityInstrumentationTestCase2<MainActivity> 
   }
   private View find(View v,String text) {if(v instanceof TextView && text.contentEquals(((TextView)v).getText()))return v; if(v instanceof ViewGroup)for(int i=0;i<((ViewGroup)v).getChildCount();i++){View found=find(((ViewGroup)v).getChildAt(i),text);if(found!=null)return found;} return null;}
   private View description(View v,String text) {if(text.contentEquals(v.getContentDescription()==null?"":v.getContentDescription()))return v; if(v instanceof ViewGroup)for(int i=0;i<((ViewGroup)v).getChildCount();i++){View found=description(((ViewGroup)v).getChildAt(i),text);if(found!=null)return found;}return null;}
-  private ImageView preview(View v) {if(v instanceof ImageView)return (ImageView)v; if(v instanceof ViewGroup)for(int i=0;i<((ViewGroup)v).getChildCount();i++){ImageView found=preview(((ViewGroup)v).getChildAt(i));if(found!=null)return found;}return null;}
+  private ImageView preview(View v) {
+    View image = description(v, "通知圖片 1，點擊查看");
+    return image instanceof ImageView ? (ImageView) image : null;
+  }
   private void shell(String command) throws Exception {try(android.os.ParcelFileDescriptor fd=getInstrumentation().getUiAutomation().executeShellCommand(command);InputStream in=new FileInputStream(fd.getFileDescriptor())){byte[] b=new byte[1024];while(in.read(b)!=-1){}}}
   private void capture(String name) throws Exception {
     for(String command:new String[]{"mkdir -p /data/local/tmp/huangnotify-ui-preview","screencap -p /data/local/tmp/huangnotify-ui-preview/"+name})try(android.os.ParcelFileDescriptor fd=getInstrumentation().getUiAutomation().executeShellCommand(command); InputStream in=new FileInputStream(fd.getFileDescriptor())) {byte[] buffer=new byte[1024];while(in.read(buffer)!=-1){}}

@@ -45,6 +45,19 @@ public class SourcePickerTest extends ActivityInstrumentationTestCase2<MainActiv
       picker.dialog.getButton(AppDialog.BUTTON_NEGATIVE).performClick();
     }); assertNull(saved);
   }
+  public void testExcludedFilterTracksUnsavedChanges() {
+    open(fixture());
+    getInstrumentation().runOnMainSync(() -> {
+      picker.filter(4);
+      assertEquals(1, picker.list.getAdapter().getCount());
+      assertEquals("sample.blocked", ((AppSources.Entry) picker.list.getAdapter().getItem(0)).pkg);
+      picker.selectVisible(true);
+      assertEquals(0, picker.list.getAdapter().getCount());
+      assertEquals(Collections.singletonMap("sample.blocked", true), picker.changes());
+      picker.dialog.getButton(AppDialog.BUTTON_NEGATIVE).performClick();
+    });
+    assertNull(saved);
+  }
   public void testSettingsOpensInstalledAppsEvenWithoutNotificationHistory() throws Exception {
     View setting=find(activity.getWindow().getDecorView(),"設定");
     getInstrumentation().runOnMainSync(()->((View)setting.getParent()).performClick()); getInstrumentation().waitForIdleSync();

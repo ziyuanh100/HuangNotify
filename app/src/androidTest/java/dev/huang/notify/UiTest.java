@@ -3,6 +3,7 @@ package dev.huang.notify;
 import android.test.ActivityInstrumentationTestCase2;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 @SuppressWarnings("deprecation")
@@ -20,17 +21,17 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
   public void testNavigationAndEmptyState() throws Exception {
     MainActivity activity = getActivity();
     getInstrumentation().waitForIdleSync();
-    assertNotNull(find(activity.getWindow().getDecorView(), "讓通知，好好留下。"));
+    assertNotNull(find(activity.getWindow().getDecorView(), "通知紀錄"));
     View settings = find(activity.getWindow().getDecorView(), "設定");
     assertNotNull(settings);
     getInstrumentation().runOnMainSync(() -> ((View) settings.getParent()).performClick());
     getInstrumentation().waitForIdleSync();
-    assertNotNull(find(activity.getWindow().getDecorView(), "照你的方式保存"));
+    assertNotNull(find(activity.getWindow().getDecorView(), "偏好設定"));
     assertNotNull(find(activity.getWindow().getDecorView(), "建立備份"));
     View star = find(activity.getWindow().getDecorView(), "收藏");
     getInstrumentation().runOnMainSync(() -> ((View) star.getParent()).performClick());
     getInstrumentation().waitForIdleSync();
-    assertNotNull(find(activity.getWindow().getDecorView(), "值得留下的通知"));
+    assertNotNull(find(activity.getWindow().getDecorView(), "收藏通知"));
   }
 
   public void testRecordingSwitchPersistsAcrossPages() throws Exception {
@@ -57,6 +58,48 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
       getInstrumentation().waitForIdleSync(); capture("update-options.png");
       getInstrumentation().runOnMainSync(()->AppDialog.dismissAll(activity));
     } finally { Store.IO.submit(()->Store.get(activity).putSetting("paused",previous?"0":"1")).get(); }
+  }
+
+  public void testSettingsStayScrolledWhenNotificationCountChanges() throws Exception {
+    MainActivity activity = getActivity();
+    getInstrumentation().runOnMainSync(() -> activity.getWindow().getDecorView()
+        .findViewWithTag("nav_settings").performClick());
+    getInstrumentation().waitForIdleSync();
+    ScrollView scroll = activity.getWindow().getDecorView().findViewWithTag("settings_scroll");
+    int offset = new Ui(activity).d(300);
+    getInstrumentation().runOnMainSync(() -> scroll.scrollTo(0, offset));
+    assertEquals(offset, scroll.getScrollY());
+
+    String title = "settings-scroll-" + java.util.UUID.randomUUID();
+    Record record = Store.IO.submit(() -> {
+      Store store = Store.get(activity);
+      String paused = store.setting("paused", "0");
+      store.putSetting("paused", "0");
+      try {
+        store.capture(title, "settings.fixture", "Fixture", title, "", 1);
+        return store.list(title, null, false, false, 1).get(0);
+      } finally {
+        store.putSetting("paused", paused);
+      }
+    }).get();
+    try {
+      long count = Store.IO.submit(() -> Store.get(activity).counts()[0]).get();
+      String expected = java.text.NumberFormat.getIntegerInstance(java.util.Locale.TAIWAN)
+          .format(count) + " 則通知 · ";
+      View storage = find(activity.getWindow().getDecorView(), "儲存概況");
+      TextView summary = (TextView) ((ViewGroup) storage.getParent()).getChildAt(1);
+      long deadline = android.os.SystemClock.elapsedRealtime() + 8000;
+      while (!summary.getText().toString().startsWith(expected)
+          && android.os.SystemClock.elapsedRealtime() < deadline) {
+        android.os.SystemClock.sleep(50);
+        getInstrumentation().waitForIdleSync();
+      }
+      assertTrue(summary.getText().toString().startsWith(expected));
+      assertSame(scroll, activity.getWindow().getDecorView().findViewWithTag("settings_scroll"));
+      assertEquals(offset, scroll.getScrollY());
+    } finally {
+      Store.IO.submit(() -> Store.get(activity).delete(record.id)).get();
+    }
   }
   private void capture(String name) throws Exception {
     for(String command:new String[]{"mkdir -p /data/local/tmp/huangnotify-ui-preview", "screencap -p /data/local/tmp/huangnotify-ui-preview/"+name}) {
