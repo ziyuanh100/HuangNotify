@@ -45,7 +45,9 @@ public final class MainActivity extends Activity {
   UpdateFlow updateFlow;
   SourcePicker sourcePicker;
   private boolean loadingSources, loadingDetail;
-  private LinearLayout root, content, nav, overview, emptyCard, filterSummary;
+  private FrameLayout root;
+  private GlassNavigation nav;
+  private LinearLayout content, overview, emptyCard, filterSummary;
   private View statusDot, clearSearch;
   private EditText searchInput;
   private TextView statusTitle, statusBody, todayCount, totalCount, starCount;
@@ -100,13 +102,18 @@ public final class MainActivity extends Activity {
       settingsScrollY = state.getInt("settings_scroll");
     }
     getWindow().setStatusBarColor(u.bg);
-    getWindow().setNavigationBarColor(u.surface);
+    getWindow().setNavigationBarColor(u.bg);
     if (!u.dark)
       getWindow()
           .getDecorView()
           .setSystemUiVisibility(
               View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
-    root = u.column();
+    root = new FrameLayout(this) {
+      @Override public void onDescendantInvalidated(View child, View target) {
+        super.onDescendantInvalidated(child, target);
+        if (child == content && nav != null) nav.invalidateBackdrop();
+      }
+    };
     root.setBackgroundColor(u.bg);
     root.setOnApplyWindowInsetsListener(
         (v, insets) -> {
@@ -115,9 +122,7 @@ public final class MainActivity extends Activity {
                 insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
                     | WindowInsets.Type.ime());
             v.setPadding(s.left, s.top, s.right, s.bottom);
-            keyboardVisible = insets.isVisible(WindowInsets.Type.ime());
-            if (nav != null) nav.setVisibility(keyboardVisible ? View.GONE : View.VISIBLE);
-            updateOverviewVisibility();
+            updateKeyboardVisibility(insets.isVisible(WindowInsets.Type.ime()));
             return WindowInsets.CONSUMED;
           }
           v.setPadding(
@@ -125,6 +130,7 @@ public final class MainActivity extends Activity {
               insets.getSystemWindowInsetTop(),
               insets.getSystemWindowInsetRight(),
               insets.getSystemWindowInsetBottom());
+          updateKeyboardVisibility(insets.getSystemWindowInsetBottom() - insets.getStableInsetBottom() > u.d(48));
           return insets.consumeSystemWindowInsets();
         });
     if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
@@ -227,48 +233,46 @@ public final class MainActivity extends Activity {
     recordSwitches.clear();
     recordStates.clear();
 
-    root.removeAllViews();
+    if (content != null) root.removeView(content);
     content = u.column();
     content.setFocusableInTouchMode(true);
-    root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
+    root.addView(content, 0, new FrameLayout.LayoutParams(-1, -1));
     if (page.equals("settings")) buildSettings();
     else buildRecords();
     content.requestFocus();
 
-    nav = u.column();
-    nav.setBackgroundColor(u.surface);
-    View divider = new View(this);
-    divider.setBackgroundColor(u.line);
-    nav.addView(divider, new LinearLayout.LayoutParams(-1, u.d(1)));
-    LinearLayout tabs = u.row();
-    tabs.setPadding(pageInset(), u.d(4), pageInset(), u.d(4));
-    for (String[] tab : new String[][] {
-        {"records", "bell", "紀錄"}, {"favorites", "star", "收藏"}, {"settings", "settings", "設定"}
-    }) {
-      boolean selected = page.equals(tab[0]);
-      LinearLayout button = u.column();
-      button.setGravity(Gravity.CENTER);
-      button.setMinimumHeight(u.d(60));
-      button.setPadding(0, u.d(4), 0, u.d(4));
-      u.ripple(button, Color.TRANSPARENT, 16);
-      FrameLayout indicator = u.iconTile(tab[1], selected ? u.accent : u.muted,
-          selected ? u.pale : Color.TRANSPARENT, 18);
-      button.addView(indicator, new LinearLayout.LayoutParams(u.d(56), u.d(29)));
-      TextView label = u.text(tab[2], 12, selected ? u.accent : u.muted, selected);
-      label.setGravity(Gravity.CENTER);
-      button.addView(label);
-      button.setTag("nav_" + tab[0]);
-      button.setSelected(selected);
-      button.setContentDescription(tab[2]);
-      button.setFocusable(true);
-      button.setOnClickListener(v -> openPage(tab[0]));
-      tabs.addView(button, new LinearLayout.LayoutParams(0, -2, 1));
+    if (nav == null) {
+      nav = new GlassNavigation(u, page, this::openPage);
+      FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(-1, -2,
+          Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+      int side = u.d(Math.max(18, (getResources().getConfiguration().screenWidthDp - 480) / 2));
+      params.setMargins(side, 0, side, u.d(12));
+      root.addView(nav, params);
+      nav.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+          updateContentInsets());
     }
-    nav.addView(tabs);
-    nav.setVisibility(keyboardVisible ? View.GONE : View.VISIBLE);
-    root.addView(nav);
+    nav.setPageContent(content);
+    nav.selectPage(page);
+    updateKeyboardVisibility(keyboardVisible);
     root.requestApplyInsets();
     updateHeader();
+  }
+
+  private void updateKeyboardVisibility(boolean visible) {
+    keyboardVisible = visible;
+    if (nav != null) nav.setVisibility(visible ? View.GONE : View.VISIBLE);
+    updateContentInsets();
+    updateOverviewVisibility();
+  }
+
+  private void updateContentInsets() {
+    View scroll = settingsScroll != null ? settingsScroll : list;
+    if (scroll == null || nav == null) return;
+    FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) nav.getLayoutParams();
+    int bottom = keyboardVisible ? 0 : nav.getHeight() + params.bottomMargin + u.d(8);
+    if (scroll.getPaddingBottom() != bottom) {
+      scroll.setPadding(scroll.getPaddingLeft(), scroll.getPaddingTop(), scroll.getPaddingRight(), bottom);
+    }
   }
 
   private void pageTitle(LinearLayout parent, String title, String icon) {
@@ -298,6 +302,7 @@ public final class MainActivity extends Activity {
     list = new ListView(this);
     list.setDivider(null);
     list.setItemsCanFocus(true);
+    list.setClipToPadding(false);
     list.setSelector(new ColorDrawable(Color.TRANSPARENT));
     list.setCacheColorHint(Color.TRANSPARENT);
     list.setVerticalScrollBarEnabled(false);
@@ -673,16 +678,68 @@ public final class MainActivity extends Activity {
     starCount.setText(format(counts[2]));
   }
 
-  void dateFilterDialog(){
-    LinearLayout body=dialogBody();body.addView(u.text("依首次保存日期篩選，包含開始與結束日期。",14,u.muted,false));
-    String today=java.time.LocalDate.now().toString();EditText start=u.field("開始日期 YYYY-MM-DD"),end=u.field("結束日期 YYYY-MM-DD");start.setText(rangeStart.isEmpty()?today:rangeStart);end.setText(rangeEnd.isEmpty()?today:rangeEnd);
-    start.setInputType(android.text.InputType.TYPE_CLASS_DATETIME|android.text.InputType.TYPE_DATETIME_VARIATION_DATE);end.setInputType(start.getInputType());
-    LinearLayout dates=u.column();dates.addView(u.text("開始日期",13,u.muted,false));dates.addView(start);u.gap(dates,8);dates.addView(u.text("結束日期",13,u.muted,false));dates.addView(end);
-    int[] selected={onlyToday?1:rangeStart.isEmpty()?0:2};dates.setVisibility(selected[0]==2?View.VISIBLE:View.GONE);AppDialog.Toggle[] options=new AppDialog.Toggle[3];String[] labels={"所有日期","今天","自訂日期"};
-    for(int i=0;i<3;i++){final int index=i;options[i]=new AppDialog.Toggle(this,true);options[i].setText(labels[i]);options[i].setChecked(selected[0]==i);body.addView(options[i]);options[i].setOnClickListener(v->{selected[0]=index;for(int j=0;j<3;j++)options[j].setChecked(j==index);start.setEnabled(index==2);end.setEnabled(index==2);dates.setVisibility(index==2?View.VISIBLE:View.GONE);});}
-    start.setEnabled(selected[0]==2);end.setEnabled(selected[0]==2);body.addView(dates);
-    AppDialog dialog=new AppDialog.Builder(this).setTitle("日期範圍").setView(body).setNegativeButton("取消",null).setPositiveButton("套用",null).create();
-    dialog.setOnShowListener(d->dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v->{String first=start.getText().toString().trim(),last=end.getText().toString().trim();if(selected[0]==2){try{RecordFilters.bounds(first,last,java.time.ZoneId.systemDefault());}catch(Exception e){end.setError(e instanceof java.time.DateTimeException?"日期不存在，請重新輸入":e.getMessage());return;}}onlyToday=selected[0]==1;rangeStart=selected[0]==2?first:"";rangeEnd=selected[0]==2?last:"";dialog.dismiss();filtersChanged();}));dialog.show();
+  void dateFilterDialog() {
+    LinearLayout body = dialogBody();
+    body.addView(u.text("依首次保存日期篩選，包含開始與結束日期。", 14, u.muted, false));
+    u.gap(body, 10);
+
+    String today = LocalDate.now().toString();
+    EditText start = u.field("開始日期 YYYY-MM-DD"), end = u.field("結束日期 YYYY-MM-DD");
+    start.setText(rangeStart.isEmpty() ? today : rangeStart);
+    end.setText(rangeEnd.isEmpty() ? today : rangeEnd);
+    start.setInputType(InputType.TYPE_CLASS_DATETIME | InputType.TYPE_DATETIME_VARIATION_DATE);
+    end.setInputType(start.getInputType());
+    LinearLayout dates = u.column();
+    dates.setPadding(0, u.d(14), 0, 0);
+    dates.addView(u.text("開始日期", 13, u.muted, false));
+    dates.addView(start);
+    u.gap(dates, 8);
+    dates.addView(u.text("結束日期", 13, u.muted, false));
+    dates.addView(end);
+
+    int[] selected = {onlyToday ? 1 : rangeStart.isEmpty() ? 0 : 2};
+    String[] labels = {"所有日期", "今天", "自訂日期"};
+    AppDialog.Toggle[] options = new AppDialog.Toggle[labels.length];
+    for (int i = 0; i < options.length; i++) {
+      int index = i;
+      AppDialog.Toggle option = new AppDialog.Toggle(this, true);
+      options[i] = option;
+      option.setText(labels[i]);
+      option.setChecked(selected[0] == i);
+      if (i > 0) u.gap(body, 6);
+      body.addView(option);
+      option.setOnClickListener(v -> {
+        selected[0] = index;
+        for (int j = 0; j < options.length; j++) options[j].setChecked(j == index);
+        dates.setVisibility(index == 2 ? View.VISIBLE : View.GONE);
+      });
+    }
+    dates.setVisibility(selected[0] == 2 ? View.VISIBLE : View.GONE);
+    body.addView(dates);
+
+    AppDialog dialog = new AppDialog.Builder(this).setTitle("日期範圍").setView(body)
+        .setNegativeButton("取消", null).setPositiveButton("套用", null).create();
+    dialog.setOnShowListener(d -> dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+      String first = start.getText().toString().trim(), last = end.getText().toString().trim();
+      boolean custom = selected[0] == 2;
+      if (custom) {
+        try {
+          RecordFilters.bounds(first, last, ZoneId.systemDefault());
+        } catch (java.time.DateTimeException e) {
+          end.setError("日期不存在，請重新輸入");
+          return;
+        } catch (IllegalArgumentException e) {
+          end.setError(e.getMessage());
+          return;
+        }
+      }
+      onlyToday = selected[0] == 1;
+      rangeStart = custom ? first : "";
+      rangeEnd = custom ? last : "";
+      dialog.dismiss();
+      filtersChanged();
+    }));
+    dialog.show();
   }
 
   private void refresh() {
@@ -986,6 +1043,7 @@ public final class MainActivity extends Activity {
     settingsScroll = new ScrollView(this);
     settingsScroll.setTag("settings_scroll");
     settingsScroll.setFillViewport(true);
+    settingsScroll.setClipToPadding(false);
     settingsScroll.setVerticalScrollBarEnabled(false);
     LinearLayout body = u.column();
     body.setPadding(pageInset(), 0, pageInset(), u.d(24));
@@ -1196,7 +1254,8 @@ public final class MainActivity extends Activity {
     textParams.setMarginStart(u.d(11));
     textParams.setMarginEnd(u.d(8));
     row.addView(text, textParams);
-    text.addView(u.text(title, 16, icon.equals("trash") ? u.danger : u.ink, true));
+    TextView heading = u.text(title, 16, icon.equals("trash") ? u.danger : u.ink, true);
+    text.addView(heading);
     TextView hint = u.text(subtitle, 13, u.muted, false);
     hint.setPadding(0, u.d(2), 0, 0);
     text.addView(hint);
@@ -1207,6 +1266,13 @@ public final class MainActivity extends Activity {
       row.setOnClickListener(v -> action.run());
     } else {
       row.addView(control);
+      u.ripple(row, Color.TRANSPARENT, 0);
+      heading.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+      row.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+      row.setOnClickListener(v -> {
+        if (control.isEnabled()) control.performClick();
+      });
+      row.setFocusable(false);
     }
     if (parent.getChildCount() > 0) {
       View divider = new View(this);
