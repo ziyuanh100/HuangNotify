@@ -19,7 +19,7 @@ final class BackupScreen implements BackupOperation.Observer {
   void pause(){resumed=false;BackupOperation.detach(this);hideProgress();}
   void destroy(){destroyed=true;pause();if(prompt!=null)prompt.dismiss();handler.removeCallbacksAndMessages(null);}
   private void toast(String text){if(!destroyed)Toast.makeText(activity,text,Toast.LENGTH_LONG).show();}
-  private EditText password(String hint){EditText e=new EditText(activity);e.setHint(hint);e.setTextColor(u.ink);e.setHintTextColor(u.muted);e.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);return e;}
+  private EditText password(String hint){EditText e=u.field(hint);e.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);return e;}
   private LinearLayout body(){LinearLayout b=u.column();b.setBackgroundColor(u.surface);return b;}
   private final Runnable tick=new Runnable(){public void run(){BackupOperation op=BackupOperation.current();if(progress!=null&&progress.isShowing()&&op!=null&&resumed&&!destroyed){phase.setText(op.task.status());bar.setIndeterminate(op.task.total<=0);if(op.task.total>0)bar.setProgress((int)Math.min(100,op.task.done*100/op.task.total));handler.postDelayed(this,250);}}};
   private void showProgress(BackupOperation op){
@@ -49,7 +49,7 @@ final class BackupScreen implements BackupOperation.Observer {
   void exportDialog(){
     if(BackupOperation.busy()){toast("已有備份作業進行中");update();return;}
     LinearLayout b=body();b.addView(u.text("包含文字、圖片、歷程、收藏與備註，單份上限 100 MiB。新版備份需用 1.2.0 以上還原；仍可匯入舊 v1／v2。",14,u.muted,false));
-    EditText password=password("備份密碼（至少 8 個字元）"),confirm=password("再次輸入密碼");b.addView(password);b.addView(confirm);
+    EditText password=password("備份密碼（至少 8 個字元）"),confirm=password("再次輸入密碼");u.gap(b,12);b.addView(password);u.gap(b,8);b.addView(confirm);
     AppDialog dialog=new AppDialog.Builder(activity).setTitle("建立備份").setView(b).setNegativeButton("取消",null)
       .setNeutralButton("不加密",(d,w)->new AppDialog.Builder(activity).setTitle("匯出未加密備份？").setMessage("取得檔案的人可閱讀文字及圖片，請妥善保管。").setNegativeButton("取消",null).setPositiveButton("匯出",(dd,ww)->prepareExport(null)).show()).setPositiveButton("加密匯出",null).create();
     dialog.setOnShowListener(d->dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v->{if(password.length()<8){password.setError("至少 8 個字元");return;}if(!password.getText().toString().equals(confirm.getText().toString())){confirm.setError("兩次密碼不相同");return;}char[] secret=password.getText().toString().toCharArray();password.setText("");confirm.setText("");dialog.dismiss();prepareExport(secret);}));dialog.show();

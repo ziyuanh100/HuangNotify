@@ -5,9 +5,10 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.Intent;
-import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -23,37 +24,35 @@ import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.*;
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 /** Native, dependency-light Android UI. Database and encryption never run on the UI thread. */
 public final class MainActivity extends Activity {
+  private static final int PAGE_SIZE = 80;
   private Ui u;
   private final List<RecordSwitch> recordSwitches = new ArrayList<>();
   private final List<TextView> recordStates = new ArrayList<>();
-  private TextView backupStatus, upgradeStatus;
+  private TextView backupStatus, upgradeStatus, accessSummary, retentionSummary, storageSummary;
+  private ScrollView settingsScroll;
+  private int settingsScrollY;
   private boolean recordingLoaded, recordingSaving;
   PermissionGuide permissionGuide;
   UpdateFlow updateFlow;
   SourcePicker sourcePicker;
-  private boolean loadingSources;
-  private LinearLayout root, content, nav, statusBox;
-  private TextView statusTitle,
-      statusBody,
-      todayCount,
-      totalCount,
-      starCount,
-      sectionTitle,
-      empty,
-      loadMore;
+  private boolean loadingSources, loadingDetail;
+  private LinearLayout root, content, nav, overview, emptyCard, filterSummary;
+  private View statusDot, clearSearch;
+  private EditText searchInput;
+  private TextView statusTitle, statusBody, todayCount, totalCount, starCount;
+  private TextView appFilter, timeFilter, imageFilter, filterRange, sectionTitle, resultCount;
+  private TextView emptyTitle, emptyBody, emptyAction, loadMore;
   private ListView list;
-  private RecordsAdapter adapter;
+  private RecordTimeline adapter;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private final List<Record> rows = new ArrayList<>();
   private List<String[]> apps = new ArrayList<>();
@@ -65,9 +64,9 @@ public final class MainActivity extends Activity {
       retention = "0",
       lastSaved = "0";
   private long[] counts = {0, 0, 0};
-  private boolean onlyToday = false, refreshing = false, resumed = false, onlyImages=false;
+  private boolean onlyToday, refreshing, resumed, onlyImages, searchPending, keyboardVisible;
   private String rangeStart="",rangeEnd="";
-  private int limit = 80, generation;
+  private int limit = PAGE_SIZE, generation, displayedGeneration = -1;
   BackupScreen backupScreen;
   private final Runnable poll =
       new Runnable() {
@@ -78,19 +77,13 @@ public final class MainActivity extends Activity {
           }
         }
       };
-  private final Runnable searchRefresh =
-      () -> {
-        limit = 80;
-        generation++;
-        refresh();
-      };
+  private final Runnable searchRefresh = () -> {
+    searchPending = false;
+    reloadRecords();
+  };
 
   @Override
   public void onCreate(Bundle state) {
-    if ((getResources().getConfiguration().uiMode
-            & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
-        == android.content.res.Configuration.UI_MODE_NIGHT_YES)
-      setTheme(android.R.style.Theme_Material_NoActionBar);
     super.onCreate(state);
     u = new Ui(this);
     permissionGuide = new PermissionGuide(this);
@@ -104,6 +97,7 @@ public final class MainActivity extends Activity {
       filterName = state.getString("filter", "全部 App");
       onlyToday = state.getBoolean("today");
       onlyImages=state.getBoolean("images");rangeStart=state.getString("range_start","");rangeEnd=state.getString("range_end","");
+      settingsScrollY = state.getInt("settings_scroll");
     }
     getWindow().setStatusBarColor(u.bg);
     getWindow().setNavigationBarColor(u.surface);
@@ -116,10 +110,14 @@ public final class MainActivity extends Activity {
     root.setBackgroundColor(u.bg);
     root.setOnApplyWindowInsetsListener(
         (v, insets) -> {
-          if (android.os.Build.VERSION.SDK_INT >= 30) {
+          if (Build.VERSION.SDK_INT >= 30) {
             android.graphics.Insets s =
-                insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
+                insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
+                    | WindowInsets.Type.ime());
             v.setPadding(s.left, s.top, s.right, s.bottom);
+            keyboardVisible = insets.isVisible(WindowInsets.Type.ime());
+            if (nav != null) nav.setVisibility(keyboardVisible ? View.GONE : View.VISIBLE);
+            updateOverviewVisibility();
             return WindowInsets.CONSUMED;
           }
           v.setPadding(
@@ -129,7 +127,7 @@ public final class MainActivity extends Activity {
               insets.getSystemWindowInsetBottom());
           return insets.consumeSystemWindowInsets();
         });
-    if (android.os.Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
+    if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
     setContentView(root);
     if (getIntent().getBooleanExtra("open_updates",false)) page="settings";
     UpgradeManager.reconcile(this);
@@ -149,7 +147,10 @@ public final class MainActivity extends Activity {
 
   @Override protected void onNewIntent(Intent intent) {
     super.onNewIntent(intent); setIntent(intent);
-    if (intent.getBooleanExtra("open_updates",false)) { page="settings"; build(); refresh(); }
+    if (intent.getBooleanExtra("open_updates", false)) {
+      if (page.equals("settings")) refresh();
+      else openPage("settings");
+    }
   }
 
   @Override
@@ -159,7 +160,7 @@ public final class MainActivity extends Activity {
     handler.removeCallbacks(poll);
     handler.post(poll);
     handler.post(() -> { if (resumed) permissionGuide.resume(); });
-    if (page.equals("settings")) build();
+    if (settingsScroll != null && settingsScroll.isLaidOut()) build();
     AutoBackup.schedule(this);
     UpgradeManager.reconcile(this);
     UpdateChecker.schedule(this);
@@ -197,212 +198,388 @@ public final class MainActivity extends Activity {
     b.putString("filter", filterName);
     b.putBoolean("today", onlyToday);
     b.putBoolean("images",onlyImages);b.putString("range_start",rangeStart);b.putString("range_end",rangeEnd);
+    b.putInt("settings_scroll", settingsScroll == null ? settingsScrollY : settingsScroll.getScrollY());
+  }
+
+  private void openPage(String nextPage) {
+    if (page.equals(nextPage)) return;
+    hideKeyboard();
+    handler.removeCallbacks(searchRefresh);
+    searchPending = false;
+    limit = PAGE_SIZE;
+    generation++;
+    page = nextPage;
+    build();
+    refresh();
+  }
+
+  private int pageInset() {
+    return u.d(Math.max(16, (getResources().getConfiguration().screenWidthDp - 680) / 2));
   }
 
   private void build() {
+    if (settingsScroll != null) settingsScrollY = settingsScroll.getScrollY();
+    settingsScroll = null;
+    accessSummary = retentionSummary = storageSummary = backupStatus = upgradeStatus = null;
+    statusTitle = null;
+    overview = null;
+    list = null;
+    recordSwitches.clear();
+    recordStates.clear();
+
     root.removeAllViews();
-    recordSwitches.clear(); recordStates.clear(); backupStatus=null; upgradeStatus=null;
     content = u.column();
+    content.setFocusableInTouchMode(true);
     root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
     if (page.equals("settings")) buildSettings();
     else buildRecords();
-    nav = u.row();
+    content.requestFocus();
+
+    nav = u.column();
     nav.setBackgroundColor(u.surface);
-    nav.setPadding(u.d(12), u.d(8), u.d(12), u.d(6));
-    for (String[] tab :
-        new String[][] {
-          {"records", "bell", "紀錄"}, {"favorites", "star", "收藏"}, {"settings", "settings", "設定"}
-        }) {
+    View divider = new View(this);
+    divider.setBackgroundColor(u.line);
+    nav.addView(divider, new LinearLayout.LayoutParams(-1, u.d(1)));
+    LinearLayout tabs = u.row();
+    tabs.setPadding(pageInset(), u.d(4), pageInset(), u.d(4));
+    for (String[] tab : new String[][] {
+        {"records", "bell", "紀錄"}, {"favorites", "star", "收藏"}, {"settings", "settings", "設定"}
+    }) {
       boolean selected = page.equals(tab[0]);
       LinearLayout button = u.column();
       button.setGravity(Gravity.CENTER);
-      button.setPadding(0, u.d(8), 0, u.d(8));
-      u.ripple(button, selected ? u.pale : u.surface, 20);
-      button.addView(
-          u.icon(tab[1], selected ? u.accent : u.muted),
-          new LinearLayout.LayoutParams(u.d(24), u.d(24)));
+      button.setMinimumHeight(u.d(60));
+      button.setPadding(0, u.d(4), 0, u.d(4));
+      u.ripple(button, Color.TRANSPARENT, 16);
+      FrameLayout indicator = u.iconTile(tab[1], selected ? u.accent : u.muted,
+          selected ? u.pale : Color.TRANSPARENT, 18);
+      button.addView(indicator, new LinearLayout.LayoutParams(u.d(56), u.d(29)));
       TextView label = u.text(tab[2], 12, selected ? u.accent : u.muted, selected);
       label.setGravity(Gravity.CENTER);
-      label.setPadding(0, u.d(4), 0, 0);
       button.addView(label);
-      LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(0, -2, 1);
-      bp.setMargins(u.d(5), 0, u.d(5), 0);
-      nav.addView(button, bp);
-      button.setContentDescription(tab[2] + (selected ? "，已選取" : ""));
+      button.setTag("nav_" + tab[0]);
+      button.setSelected(selected);
+      button.setContentDescription(tab[2]);
       button.setFocusable(true);
-      button.setOnClickListener(
-          v -> {
-            if (!page.equals(tab[0])) {
-              hideKeyboard();
-              page = tab[0];
-              generation++;
-              build();
-              refresh();
-            }
-          });
+      button.setOnClickListener(v -> openPage(tab[0]));
+      tabs.addView(button, new LinearLayout.LayoutParams(0, -2, 1));
     }
+    nav.addView(tabs);
+    nav.setVisibility(keyboardVisible ? View.GONE : View.VISIBLE);
     root.addView(nav);
+    root.requestApplyInsets();
     updateHeader();
   }
 
-  private void title(LinearLayout parent, String eyebrow, String title, String subtitle) {
-    LinearLayout box = u.column();
-    box.setPadding(u.d(24), u.d(22), u.d(24), u.d(14));
-    TextView brand = u.text(eyebrow, 12, u.accent, true);
-    brand.setLetterSpacing(.13f);
-    box.addView(brand);
-    u.gap(box, 7);
-    TextView heading = u.text(title, 30, u.ink, true);
-    if (android.os.Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
-    box.addView(heading);
-    u.gap(box, 5);
-    box.addView(u.text(subtitle, 13, u.muted, false));
-    parent.addView(box);
+  private void pageTitle(LinearLayout parent, String title, String icon) {
+    LinearLayout bar = u.row();
+    bar.setPadding(pageInset(), u.d(10), pageInset(), u.d(12));
+    FrameLayout mark = u.iconTile(icon, u.lime, u.hero, 15);
+    bar.addView(mark, new LinearLayout.LayoutParams(u.d(44), u.d(44)));
+    LinearLayout text = u.column();
+    TextView brand = u.text("HuangNotify", 12, u.muted, true);
+    brand.setLetterSpacing(.06f);
+    text.addView(brand);
+    TextView heading = u.text(title, 26, u.ink, true);
+    u.heading(heading);
+    text.addView(heading);
+    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -2, 1);
+    params.setMarginStart(u.d(12));
+    bar.addView(text, params);
+    parent.addView(bar);
   }
 
   private void buildRecords() {
-    title(
-        content,
-        "HUANGNOTIFY",
-        page.equals("favorites") ? "值得留下的通知" : "讓通知，好好留下。",
-        page.equals("favorites") ? "收藏的紀錄不會被定期清理。" : "即使通知消失，也能回來找找。 ");
+    boolean favorites = page.equals("favorites");
+    LinearLayout chrome = u.column();
+    pageTitle(chrome, favorites ? "收藏通知" : "通知紀錄", favorites ? "star" : "bell");
+    buildSearch(chrome);
+
     list = new ListView(this);
     list.setDivider(null);
-    list.setDividerHeight(0);
+    list.setItemsCanFocus(true);
+    list.setSelector(new ColorDrawable(Color.TRANSPARENT));
     list.setCacheColorHint(Color.TRANSPARENT);
-    list.setClipToPadding(false);
-    list.setPadding(u.d(16), 0, u.d(16), u.d(12));
+    list.setVerticalScrollBarEnabled(false);
+
+    // Give the list room in landscape, split screen, and other short windows.
+    float fontScale = getResources().getConfiguration().fontScale;
+    int height = getResources().getConfiguration().screenHeightDp;
+    if (height > 0 && height < (fontScale >= 1.5f ? 560 : 420)) {
+      list.addHeaderView(chrome, null, false);
+    } else {
+      content.addView(chrome);
+    }
+
     LinearLayout header = u.column();
-    header.setPadding(u.d(4), 0, u.d(4), u.d(6));
-    statusBox = u.column();
-    statusBox.setPadding(u.d(16), u.d(14), u.d(16), u.d(14));
-    u.ripple(statusBox, u.pale, 18);
-    statusTitle = u.text("確認記錄狀態…", 15, u.accent, true);
-    statusBody = u.text("", 12, u.muted, false);
-    statusBody.setPadding(0, u.d(5), 0, 0);
-    LinearLayout statusRow=u.row(), statusText=u.column();
-    statusText.addView(statusTitle); statusText.addView(statusBody);
-    statusRow.addView(statusText,new LinearLayout.LayoutParams(0,-2,1));
-    statusRow.addView(recordSwitch()); statusBox.addView(statusRow);
-    header.addView(statusBox);
-    statusBox.setOnClickListener(v -> accessDialog());
-    u.gap(header, 12);
-    LinearLayout stats = u.row();
-    todayCount = stat(stats, "今日新增", counts[1], true);
-    totalCount = stat(stats, "目前保存", counts[0], false);
-    starCount = stat(stats, "收藏", counts[2], false);
-    header.addView(stats);
-    u.gap(header, 16);
-    LinearLayout search = u.row();
-    search.setPadding(u.d(14), 0, u.d(10), 0);
-    search.setBackground(u.shape(u.surface, 18));
-    search.addView(u.icon("search", u.muted), new LinearLayout.LayoutParams(u.d(22), u.d(22)));
-    EditText input = new EditText(this);
-    input.setSingleLine();
-    input.setTextSize(15);
-    input.setTextColor(u.ink);
-    input.setHintTextColor(u.muted);
-    input.setHint("搜尋通知、App 或備註");
-    input.setContentDescription("搜尋通知");
-    input.setBackgroundColor(Color.TRANSPARENT);
-    input.setPadding(u.d(12), u.d(14), 0, u.d(14));
-    input.setText(query);
-    input.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
-    search.addView(input, new LinearLayout.LayoutParams(0, u.d(54), 1));
-    TextView clear = u.text("清除", 13, u.accent, true);
-    clear.setGravity(Gravity.CENTER);
-    clear.setMinWidth(u.d(48));
-    clear.setMinHeight(u.d(48));
-    search.addView(clear);
-    clear.setOnClickListener(v -> input.setText(""));
-    input.setOnEditorActionListener(
-        (v, id, event) -> {
-          hideKeyboard();
-          refresh();
-          return true;
-        });
-    input.addTextChangedListener(
-        new TextWatcher() {
-          public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
-
-          public void onTextChanged(CharSequence s, int st, int before, int count) {
-            query = s.toString();
-            handler.removeCallbacks(searchRefresh);
-            handler.postDelayed(searchRefresh, 250);
-          }
-
-          public void afterTextChanged(Editable e) {}
-        });
-    header.addView(search);
-    u.gap(header, 12);
-    LinearLayout filters = u.row();
-    TextView appFilter = chip(filterName + " ▾", filterPkg != null);
-    appFilter.setOnClickListener(v -> chooseApp());
-    filters.addView(appFilter,new LinearLayout.LayoutParams(0,-2,1));
-    TextView timeFilter = chip(onlyToday ? "今天 ▾" : rangeStart.isEmpty()?"所有日期 ▾":"自訂日期 ▾", onlyToday||!rangeStart.isEmpty());
-    appFilter.setMaxLines(2);timeFilter.setMaxLines(2);timeFilter.setEllipsize(android.text.TextUtils.TruncateAt.END);appFilter.setEllipsize(android.text.TextUtils.TruncateAt.END);
-    LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(0,-2,1);
-    fp.setMargins(u.d(8), 0, 0, 0);
-    filters.addView(timeFilter, fp);
-    timeFilter.setOnClickListener(v->dateFilterDialog());header.addView(filters);u.gap(header,8);
-    LinearLayout extra=u.row();TextView imageFilter=chip(onlyImages?"有圖片 ✓":"只看有圖片",onlyImages);imageFilter.setOnClickListener(v->{onlyImages=!onlyImages;filtersChanged();});imageFilter.setMaxLines(2);extra.addView(imageFilter,new LinearLayout.LayoutParams(0,-2,1));
-    TextView clearFilters=chip("清除篩選",false);LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,-2,1);cp.leftMargin=u.d(8);extra.addView(clearFilters,cp);
-    clearFilters.setOnClickListener(v->{onlyToday=false;onlyImages=false;rangeStart="";rangeEnd="";filterPkg=null;filterName="全部 App";query="";filtersChanged();});header.addView(extra);
-    if(!rangeStart.isEmpty()&&!onlyToday)header.addView(u.text(rangeStart+" ～ "+rangeEnd+" · 依首次保存日期",12,u.muted,false));
-    u.gap(header, 18);
-    sectionTitle = u.text(page.equals("favorites") ? "已收藏" : "最近紀錄", 14, u.muted, true);
-    header.addView(sectionTitle);
-    u.gap(header, 8);
-    empty = u.text("讀取紀錄中…", 15, u.muted, false);
-    empty.setGravity(Gravity.CENTER);
-    empty.setPadding(u.d(24), u.d(30), u.d(24), u.d(30));
-    header.addView(empty);
+    header.setPadding(pageInset(), u.d(10), pageInset(), u.d(2));
+    if (!favorites) {
+      overview = u.column();
+      overview.addView(recordingOverview());
+      u.gap(overview, 14);
+      header.addView(overview);
+    }
+    buildResultsHeader(header, favorites);
     list.addHeaderView(header, null, false);
     LinearLayout footer = u.column();
-    footer.setPadding(u.d(4), u.d(8), u.d(4), u.d(20));
+    footer.setPadding(pageInset(), u.d(8), pageInset(), u.d(16));
     loadMore = u.button("載入更多", false);
-    loadMore.setOnClickListener(
-        v -> {
-          limit += 80;
-          generation++;
-          refresh();
-        });
+    loadMore.setVisibility(View.GONE);
+    loadMore.setOnClickListener(v -> {
+      limit += PAGE_SIZE;
+      generation++;
+      refresh();
+    });
     footer.addView(loadMore);
     list.addFooterView(footer, null, false);
-    adapter = new RecordsAdapter();
+
+    rows.clear();
+    displayedGeneration = -1;
+    adapter = new RecordTimeline(u, rows, pageInset());
     list.setAdapter(adapter);
-    list.setOnItemClickListener(
-        (parent, v, position, id) -> {
-          int index = position - list.getHeaderViewsCount();
-          if (index >= 0 && index < rows.size()) detail(rows.get(index));
-        });
+    list.setOnItemClickListener((parent, v, position, id) -> {
+      int index = position - list.getHeaderViewsCount();
+      if (displayedGeneration == generation && index >= 0 && index < rows.size()) {
+        detail(rows.get(index));
+      }
+    });
     content.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+    updateFilterControls();
   }
 
-  private TextView stat(LinearLayout row, String label, long value, boolean primary) {
-    LinearLayout box = u.column();
-    box.setPadding(u.d(12), u.d(13), u.d(10), u.d(13));
-    box.setBackground(u.shape(primary ? u.accent : u.surface, 18));
-    TextView number =
-        u.text(format(value), 25, primary ? (u.dark ? 0xff123c2a : Color.WHITE) : u.ink, true);
-    box.addView(number);
-    TextView caption =
-        u.text(label, 12, primary ? (u.dark ? 0xff244d3c : 0xffd7eee2) : u.muted, false);
-    u.gap(box, 4);
-    box.addView(caption);
-    LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -2, 1);
-    if (row.getChildCount() > 0) p.setMargins(u.d(8), 0, 0, 0);
-    row.addView(box, p);
+  private void buildSearch(LinearLayout parent) {
+    LinearLayout search = u.row();
+    search.setPaddingRelative(u.d(14), 0, u.d(4), 0);
+    search.setBackground(u.outline(u.surface, 18));
+    search.addView(u.icon("search", u.muted), new LinearLayout.LayoutParams(u.d(21), u.d(21)));
+
+    searchInput = new EditText(this);
+    searchInput.setInputType(InputType.TYPE_CLASS_TEXT);
+    searchInput.setSingleLine();
+    searchInput.setTextSize(15);
+    searchInput.setTextColor(u.ink);
+    searchInput.setHintTextColor(u.muted);
+    searchInput.setHint("搜尋通知、App 或備註");
+    searchInput.setBackgroundColor(Color.TRANSPARENT);
+    searchInput.setPaddingRelative(u.d(10), u.d(10), 0, u.d(10));
+    searchInput.setMinHeight(u.d(52));
+    searchInput.setText(query);
+    searchInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+    search.addView(searchInput, new LinearLayout.LayoutParams(0, -2, 1));
+    clearSearch = u.iconButton("close", "清除搜尋", u.muted, () -> searchInput.setText(""));
+    search.addView(clearSearch, new LinearLayout.LayoutParams(u.d(48), u.d(48)));
+    LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(-1, -2);
+    searchParams.setMargins(pageInset(), 0, pageInset(), 0);
+    parent.addView(search, searchParams);
+    searchInput.setOnEditorActionListener((v, id, event) -> {
+      handler.removeCallbacks(searchRefresh);
+      searchRefresh.run();
+      hideKeyboard();
+      return true;
+    });
+    searchInput.addTextChangedListener(new TextWatcher() {
+      public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+      public void onTextChanged(CharSequence s, int start, int before, int count) {
+        query = s.toString();
+        generation++;
+        searchPending = true;
+        updateFilterControls();
+        resultCount.setText("搜尋中…");
+        handler.removeCallbacks(searchRefresh);
+        handler.postDelayed(searchRefresh, 250);
+      }
+      public void afterTextChanged(Editable e) {}
+    });
+
+    HorizontalScrollView filterStrip = new HorizontalScrollView(this);
+    filterStrip.setHorizontalScrollBarEnabled(false);
+    filterStrip.setPadding(pageInset(), u.d(7), pageInset(), u.d(2));
+    filterStrip.setClipToPadding(false);
+    LinearLayout chips = u.row();
+    filterStrip.addView(chips);
+    appFilter = filterChip(chips, this::chooseApp);
+    timeFilter = filterChip(chips, this::dateFilterDialog);
+    imageFilter = filterChip(chips, () -> {
+      onlyImages = !onlyImages;
+      filtersChanged();
+    });
+    parent.addView(filterStrip);
+
+    filterSummary = u.row();
+    filterSummary.setPadding(pageInset(), 0, pageInset(), 0);
+    filterRange = u.text("", 12, u.muted, false);
+    filterSummary.addView(filterRange, new LinearLayout.LayoutParams(0, -2, 1));
+    TextView clear = u.button("清除篩選", false);
+    clear.setTextSize(13);
+    clear.setMinHeight(u.d(48));
+    u.ripple(clear, Color.TRANSPARENT, 16);
+    clear.setOnClickListener(v -> resetFilters());
+    filterSummary.addView(clear);
+    parent.addView(filterSummary);
+  }
+
+  private TextView filterChip(LinearLayout parent, Runnable action) {
+    TextView chip = u.button("", false);
+    chip.setTextSize(13);
+    chip.setMinHeight(u.d(48));
+    chip.setPadding(u.d(12), u.d(8), u.d(12), u.d(8));
+    chip.setMaxWidth(u.d(190));
+    chip.setMaxLines(2);
+    chip.setEllipsize(TextUtils.TruncateAt.END);
+    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
+    if (parent.getChildCount() > 0) params.setMarginStart(u.d(6));
+    parent.addView(chip, params);
+    chip.setOnClickListener(v -> {
+      hideKeyboard();
+      action.run();
+    });
+    return chip;
+  }
+
+  private void buildResultsHeader(LinearLayout header, boolean favorites) {
+    LinearLayout section = u.row();
+    section.setPadding(u.d(2), u.d(6), u.d(2), u.d(5));
+    sectionTitle = u.text("", 19, u.ink, true);
+    u.heading(sectionTitle);
+    section.addView(sectionTitle, new LinearLayout.LayoutParams(0, -2, 1));
+    resultCount = u.text("讀取中…", 12, u.muted, true);
+    resultCount.setPadding(u.d(10), u.d(4), u.d(10), u.d(4));
+    resultCount.setBackground(u.shape(u.pale, 12));
+    section.addView(resultCount);
+    header.addView(section);
+
+    emptyCard = u.column();
+    emptyCard.setGravity(Gravity.CENTER_HORIZONTAL);
+    emptyCard.setPadding(u.d(16), u.d(20), u.d(16), u.d(20));
+    emptyCard.setBackground(u.outline(u.surface, 20));
+    emptyCard.addView(u.iconTile(favorites ? "star" : "bell", u.accent, u.pale, 18),
+        new LinearLayout.LayoutParams(u.d(44), u.d(44)));
+    u.gap(emptyCard, 8);
+    emptyTitle = u.text("正在讀取通知", 17, u.ink, true);
+    emptyTitle.setGravity(Gravity.CENTER);
+    emptyCard.addView(emptyTitle);
+    emptyBody = u.text("", 14, u.muted, false);
+    emptyBody.setGravity(Gravity.CENTER);
+    emptyBody.setPadding(0, u.d(4), 0, u.d(8));
+    emptyCard.addView(emptyBody);
+    emptyAction = u.button("設定通知存取權", true);
+    emptyAction.setVisibility(View.GONE);
+    emptyCard.addView(emptyAction);
+    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+    params.topMargin = u.d(8);
+    header.addView(emptyCard, params);
+  }
+
+  private LinearLayout recordingOverview() {
+    LinearLayout card = u.column();
+    card.setPadding(u.d(14), u.d(12), u.d(14), u.d(15));
+    card.setBackground(u.shape(u.hero, 24));
+
+    LinearLayout status = u.row();
+    LinearLayout statusText = u.column();
+    LinearLayout caption = u.row();
+    statusDot = new View(this);
+    statusDot.setBackground(u.shape(u.heroMuted, 8));
+    LinearLayout.LayoutParams dot = new LinearLayout.LayoutParams(u.d(8), u.d(8));
+    dot.setMarginEnd(u.d(7));
+    caption.addView(statusDot, dot);
+    caption.addView(u.text("通知記錄", 12, u.heroMuted, true));
+    statusText.addView(caption);
+    u.gap(statusText, 3);
+    statusTitle = u.text("讀取記錄狀態…", 20, u.heroInk, true);
+    statusText.addView(statusTitle);
+    statusBody = u.text("", 12, u.heroMuted, false);
+    statusText.addView(statusBody);
+    u.ripple(statusText, u.hero, 10);
+    statusText.setFocusable(true);
+    statusText.setOnClickListener(v -> accessDialog());
+    status.addView(statusText, new LinearLayout.LayoutParams(0, -2, 1));
+    status.addView(recordSwitch(true));
+    card.addView(status);
+    u.gap(card, 11);
+    View line = new View(this);
+    line.setBackgroundColor(u.heroLine);
+    card.addView(line, new LinearLayout.LayoutParams(-1, u.d(1)));
+    u.gap(card, 10);
+    LinearLayout stats = u.row();
+    stats.setGravity(Gravity.TOP);
+    todayCount = addStat(stats, "今日新增", counts[1], u.lime);
+    totalCount = addStat(stats, "目前保存", counts[0], u.heroInk);
+    starCount = addStat(stats, "已收藏", counts[2], u.heroInk);
+    card.addView(stats);
+    return card;
+  }
+
+  private TextView addStat(LinearLayout parent, String label, long value, int color) {
+    LinearLayout stat = u.column();
+    TextView number = u.text(format(value), 24, color, true);
+    stat.addView(number);
+    stat.addView(u.text(label, 12, u.heroMuted, false));
+    parent.addView(stat, new LinearLayout.LayoutParams(0, -2, 1));
     return number;
   }
 
-  private TextView chip(String title, boolean selected) {
-    TextView t = u.text(title, 13, selected ? u.accent : u.muted, true);
-    t.setPadding(u.d(14), u.d(12), u.d(14), u.d(12));
-    u.ripple(t, selected ? u.pale : u.surface, 24);
-    t.setMinHeight(u.d(48));
-    t.setGravity(Gravity.CENTER);
-    return t;
+  private boolean hasFilters() {
+    return !query.trim().isEmpty() || hasFilterOptions();
+  }
+
+  private boolean hasFilterOptions() {
+    return filterPkg != null || onlyToday || onlyImages || !rangeStart.isEmpty();
+  }
+
+  private void updateOverviewVisibility() {
+    if (overview != null) overview.setVisibility(hasFilters() || keyboardVisible ? View.GONE : View.VISIBLE);
+  }
+
+  private void updateFilterControls() {
+    if (list == null) return;
+    updateChip(appFilter, filterName + " ▾", filterPkg != null);
+    updateChip(timeFilter, onlyToday ? "今天 ▾" : rangeStart.isEmpty() ? "所有日期 ▾" : "自訂日期 ▾",
+        onlyToday || !rangeStart.isEmpty());
+    updateChip(imageFilter, onlyImages ? "有圖片 ✓" : "只看有圖片", onlyImages);
+    clearSearch.setVisibility(query.isEmpty() ? View.INVISIBLE : View.VISIBLE);
+    String title = page.equals("favorites") ? "已收藏通知" : "所有通知";
+    if (hasFilterOptions()) title = "篩選結果";
+    else if (!query.trim().isEmpty()) title = "搜尋結果";
+    sectionTitle.setText(title);
+    filterSummary.setVisibility(hasFilterOptions() ? View.VISIBLE : View.GONE);
+    filterRange.setText(rangeStart.isEmpty() ? "已套用篩選" : rangeStart + " ～ " + rangeEnd);
+    updateOverviewVisibility();
+  }
+
+  private void updateChip(TextView chip, String text, boolean selected) {
+    chip.setText(text);
+    chip.setSelected(selected);
+    chip.setTextColor(selected ? u.accent : u.muted);
+    u.ripple(chip, selected ? u.pale : u.surface, 16);
+  }
+
+  private void resetFilters() {
+    onlyToday = onlyImages = false;
+    rangeStart = rangeEnd = "";
+    filterPkg = null;
+    filterName = "全部 App";
+    searchInput.setText("");
+    hideKeyboard();
+    filtersChanged();
+  }
+
+  private void reloadRecords() {
+    limit = PAGE_SIZE;
+    if (list != null) {
+      list.smoothScrollToPositionFromTop(0, 0, 0);
+      resultCount.setText("讀取中…");
+      if (rows.isEmpty()) showEmpty("正在讀取通知", "", null, null);
+    }
+    refresh();
+  }
+
+  private void filtersChanged() {
+    handler.removeCallbacks(searchRefresh);
+    searchPending = false;
+    generation++;
+    updateFilterControls();
+    reloadRecords();
   }
 
   private String recordingState() {
@@ -412,8 +589,8 @@ public final class MainActivity extends Activity {
     if (!Store.error.isEmpty()) return "需要處理 · " + Store.error;
     return CaptureService.connected ? "正在記錄 · 開關啟用" : "服務未連線 · 點選通知存取權重新連線";
   }
-  private RecordSwitch recordSwitch() {
-    RecordSwitch control=new RecordSwitch(this);
+  private RecordSwitch recordSwitch(boolean onHero) {
+    RecordSwitch control=new RecordSwitch(this, onHero);
     control.setContentDescription("記錄通知"); control.setChecked(!paused.equals("1"));
     control.setEnabled(recordingLoaded && !recordingSaving);
     control.setOnCheckedChangeListener((button,checked) -> changeRecording(checked));
@@ -451,39 +628,54 @@ public final class MainActivity extends Activity {
   }
   private void updateHeader() {
     updateRecordingControls();
-    if (page.equals("settings") || statusTitle == null) return;
     boolean access = hasAccess();
+    if (accessSummary != null) {
+      accessSummary.setText(access ? "已授權 · 檢查通知服務連線" : "尚未授權 · 開啟後才能記錄");
+      retentionSummary.setText(retention.equals("0") ? "持續保留" : retention + " 天 · 收藏不受影響");
+    }
+    if (statusTitle == null) return;
+
     String title, body;
-    if (!access) {
-      title = "開始保存你的通知";
-      body = "點這裡開啟通知存取權；只存於這支手機。";
+    int color = u.heroMuted;
+    if (recordingSaving) {
+      title = "正在儲存設定…";
+      body = "";
+    } else if (!recordingLoaded) {
+      title = "讀取記錄狀態…";
+      body = "";
     } else if (paused.equals("1")) {
       title = "記錄已暫停";
-      body = "已保存的紀錄仍在。到設定重新啟用。";
+      body = "已保存的通知可繼續查看";
+    } else if (!access) {
+      title = "等待通知存取權";
+      body = "點此設定，開始保存通知";
+      color = u.warning;
     } else if (!Store.error.isEmpty()) {
       title = "記錄需要處理";
       body = Store.error;
+      color = u.warning;
     } else if (CaptureService.connected) {
-      title = "● 正在記錄";
-      body =
-          lastSaved.equals("0")
-              ? "準備好了，等待下一則通知。"
-              : "最近保存於 " + date(parseLong(lastSaved), "MM/dd HH:mm:ss");
+      title = "正在記錄";
+      body = lastSaved.equals("0") ? "準備好接收下一則通知"
+          : "最近保存 " + date(parseLong(lastSaved), "MM/dd HH:mm");
+      color = u.lime;
     } else {
-      title = "等待通知服務連線";
-      body = "點這裡檢查權限與重新連線。";
+      title = "等待服務連線";
+      body = "點此檢查權限與重新連線";
+      color = u.warning;
     }
+    statusDot.setBackgroundTintList(android.content.res.ColorStateList.valueOf(color));
     statusTitle.setText(title);
     statusBody.setText(body);
+    statusBody.setVisibility(body.isEmpty() ? View.GONE : View.VISIBLE);
     todayCount.setText(format(counts[1]));
     totalCount.setText(format(counts[0]));
     starCount.setText(format(counts[2]));
   }
 
-  private void filtersChanged(){limit=80;generation++;build();refresh();}
   void dateFilterDialog(){
     LinearLayout body=dialogBody();body.addView(u.text("依首次保存日期篩選，包含開始與結束日期。",14,u.muted,false));
-    String today=java.time.LocalDate.now().toString();EditText start=edit("開始日期 YYYY-MM-DD"),end=edit("結束日期 YYYY-MM-DD");start.setText(rangeStart.isEmpty()?today:rangeStart);end.setText(rangeEnd.isEmpty()?today:rangeEnd);
+    String today=java.time.LocalDate.now().toString();EditText start=u.field("開始日期 YYYY-MM-DD"),end=u.field("結束日期 YYYY-MM-DD");start.setText(rangeStart.isEmpty()?today:rangeStart);end.setText(rangeEnd.isEmpty()?today:rangeEnd);
     start.setInputType(android.text.InputType.TYPE_CLASS_DATETIME|android.text.InputType.TYPE_DATETIME_VARIATION_DATE);end.setInputType(start.getInputType());
     LinearLayout dates=u.column();dates.addView(u.text("開始日期",13,u.muted,false));dates.addView(start);u.gap(dates,8);dates.addView(u.text("結束日期",13,u.muted,false));dates.addView(end);
     int[] selected={onlyToday?1:rangeStart.isEmpty()?0:2};dates.setVisibility(selected[0]==2?View.VISIBLE:View.GONE);AppDialog.Toggle[] options=new AppDialog.Toggle[3];String[] labels={"所有日期","今天","自訂日期"};
@@ -494,438 +686,407 @@ public final class MainActivity extends Activity {
   }
 
   private void refresh() {
+    if (isFinishing() || isDestroyed()) return;
     updateHeader();
-    if (refreshing || isFinishing() || isDestroyed()) return;
+    if (refreshing || searchPending) return;
+
     refreshing = true;
-    final int gen = generation;
-    final String q = query, pkg = filterPkg;
-    final boolean fav = page.equals("favorites"), images=onlyImages;
-    String date=java.time.LocalDate.now().toString();long[] bounds=RecordFilters.bounds(onlyToday?date:rangeStart,onlyToday?date:rangeEnd,java.time.ZoneId.systemDefault());
-    final int amount = limit;
-    Store.IO.execute(
-        () -> {
-          try {
-            Store s = Store.get(this);
-            long[] numbers = s.counts();
-            List<String[]> sources = s.apps();
-            List<Record> records = s.listFiltered(q,pkg,fav,bounds[0],bounds[1],images,amount+1);
-            String p = s.setting("paused", "0"),
-                r = s.setting("retention", "0"),
-                last = s.setting("last_saved", "0");
-            runOnUiThread(
-                () -> {
-                  refreshing = false;
-                  if (isDestroyed()) return;
-                  boolean settingsChanged =
-                      !paused.equals(p) || !retention.equals(r) || counts[0] != numbers[0];
-                  counts = numbers;
-                  apps = sources;
-                  if (!recordingSaving) paused = p;
-                  recordingLoaded=true;
-                  retention = r;
-                  lastSaved = last;
-                  if (settingsChanged && page.equals("settings")) build();
-                  updateHeader();
-                  if (gen != generation) {
-                    refresh();
-                    return;
-                  }
-                  if (!page.equals("settings")) {
-                    boolean more = records.size() > amount;
-                    if (more) records.remove(records.size() - 1);
-                    rows.clear();
-                    rows.addAll(records);
-                    adapter.notifyDataSetChanged();
-                    loadMore.setVisibility(more ? View.VISIBLE : View.GONE);
-                    empty.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
-                    empty.setText(
-                        !q.isEmpty() || pkg != null || bounds[0]>=0 || images
-                            ? "找不到符合條件的通知\n試試其他關鍵字或篩選條件。"
-                            : fav
-                                ? "還沒有收藏\n打開一則通知，點選「加入收藏」。"
-                                : hasAccess()
-                                    ? "你的通知會出現在這裡\n成功記錄後，原通知消失也能找回。"
-                                    : "先開啟通知存取權\n不需要帳號，也不會上傳通知。 ");
-                    sectionTitle.setText(
-                        (fav ? "已收藏" : "最近紀錄") + " · " + rows.size() + (more ? "+" : "") + " 則");
-                  }
-                });
-          } catch (Exception e) {
-            runOnUiThread(
-                () -> {
-                  refreshing = false;
-                  Store.error = "無法讀取紀錄，請檢查儲存空間";
-                  updateHeader();
-                });
+    int gen = generation;
+    String q = query, pkg = filterPkg;
+    boolean settings = page.equals("settings"), favorites = page.equals("favorites"), images = onlyImages;
+    String today = LocalDate.now().toString();
+    long[] bounds = RecordFilters.bounds(onlyToday ? today : rangeStart,
+        onlyToday ? today : rangeEnd, ZoneId.systemDefault());
+    int amount = limit;
+    Store.IO.execute(() -> {
+      try {
+        Store store = Store.get(this);
+        long[] numbers = store.counts();
+        List<String[]> sources = store.apps();
+        List<Record> records = settings ? Collections.emptyList()
+            : store.listFiltered(q, pkg, favorites, bounds[0], bounds[1], images, amount + 1);
+        String savedPaused = store.setting("paused", "0");
+        String savedRetention = store.setting("retention", "0");
+        String savedTime = store.setting("last_saved", "0");
+        String size = settings ? databaseSize() : "";
+        runOnUiThread(() -> {
+          refreshing = false;
+          if (isDestroyed()) return;
+          counts = numbers;
+          apps = sources;
+          if (!recordingSaving) paused = savedPaused;
+          recordingLoaded = true;
+          retention = savedRetention;
+          lastSaved = savedTime;
+          updateHeader();
+          if (gen != generation) {
+            refresh();
+          } else if (settings) {
+            storageSummary.setText(format(counts[0]) + " 則通知 · " + size);
+          } else {
+            showResults(records, amount, gen);
           }
         });
+      } catch (Exception e) {
+        runOnUiThread(() -> {
+          refreshing = false;
+          if (isDestroyed()) return;
+          Store.error = "無法讀取紀錄，請檢查儲存空間";
+          updateHeader();
+          if (gen != generation) {
+            refresh();
+          } else if (list != null) {
+            resultCount.setText("讀取失敗");
+            if (rows.isEmpty()) showEmpty("無法讀取通知", "請檢查手機儲存空間。", "重新整理", this::refresh);
+          }
+        });
+      }
+    });
+  }
+
+  private void showResults(List<Record> records, int amount, int gen) {
+    boolean more = records.size() > amount;
+    if (more) records.remove(records.size() - 1);
+    rows.clear();
+    rows.addAll(records);
+    displayedGeneration = gen;
+    loadMore.setVisibility(more ? View.VISIBLE : View.GONE);
+    emptyCard.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
+    if (rows.isEmpty()) {
+      if (hasFilters()) {
+        showEmpty("找不到符合的通知", "試試其他關鍵字、App 或日期。", null, null);
+      } else if (page.equals("favorites")) {
+        showEmpty("還沒有收藏", "打開一則通知，點選「加入收藏」。", "查看通知紀錄", () -> openPage("records"));
+      } else if (!hasAccess()) {
+        showEmpty("開啟通知存取權", "授權後，HuangNotify 會把收到的通知保存在手機。", "設定通知存取權", this::accessDialog);
+      } else {
+        showEmpty("還沒有通知紀錄", "收到並保存通知後，就會顯示在這裡。", null, null);
+      }
+    }
+    resultCount.setText(format(rows.size()) + (more ? "+" : "") + " 則");
+    adapter.notifyDataSetChanged();
+  }
+
+  private void showEmpty(String title, String message, String action, Runnable callback) {
+    emptyTitle.setText(title);
+    emptyBody.setText(message);
+    emptyAction.setVisibility(action == null ? View.GONE : View.VISIBLE);
+    if (action != null) {
+      emptyAction.setText(action);
+      emptyAction.setOnClickListener(v -> callback.run());
+    }
   }
 
   private void chooseApp() {
-    String[] names = new String[apps.size() + 1];
+    List<String[]> sources = apps;
+    String[] names = new String[sources.size() + 1];
     names[0] = "全部 App";
     int checked = 0;
-    for (int i = 0; i < apps.size(); i++) {
-      String[] a = apps.get(i);
-      names[i + 1] = a[1] + " · " + a[2] + " 則";
-      if (a[0].equals(filterPkg)) checked = i + 1;
+    for (int i = 0; i < sources.size(); i++) {
+      String[] app = sources.get(i);
+      names[i + 1] = app[1] + " · " + app[2] + " 則";
+      if (app[0].equals(filterPkg)) checked = i + 1;
     }
     new AppDialog.Builder(this)
         .setTitle("依 App 篩選")
-        .setSingleChoiceItems(
-            names,
-            checked,
-            (d, which) -> {
-              filterPkg = which == 0 ? null : apps.get(which - 1)[0];
-              filterName = which == 0 ? "全部 App" : apps.get(which - 1)[1];
-              limit = 80;
-              generation++;
-              d.dismiss();
-              build();
-              refresh();
-            })
+        .setSingleChoiceItems(names, checked, (dialog, which) -> {
+          filterPkg = which == 0 ? null : sources.get(which - 1)[0];
+          filterName = which == 0 ? "全部 App" : sources.get(which - 1)[1];
+          dialog.dismiss();
+          filtersChanged();
+        })
         .show();
   }
 
-  private final class RecordsAdapter extends BaseAdapter {
-    public int getCount() {
-      return rows.size();
-    }
-
-    public Object getItem(int i) {
-      return rows.get(i);
-    }
-
-    public long getItemId(int i) {
-      return i;
-    }
-
-    public View getView(int position, View convert, ViewGroup parent) {
-      RowHolder h;
-      if (convert == null) {
-        LinearLayout outer = u.column();
-        outer.setPadding(u.d(4), u.d(5), u.d(4), u.d(5));
-        LinearLayout card = u.column();
-        card.setPadding(u.d(16), u.d(16), u.d(16), u.d(16));
-        u.ripple(card, u.surface, 20);
-        outer.addView(card);
-        LinearLayout top = u.row();
-        ImageView icon = new ImageView(MainActivity.this);
-        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        top.addView(icon, new LinearLayout.LayoutParams(u.d(28), u.d(28)));
-        TextView app = u.text("", 12, u.muted, true);
-        app.setSingleLine();
-        app.setEllipsize(TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(0, -2, 1);
-        ap.setMargins(u.d(10), 0, u.d(8), 0);
-        top.addView(app, ap);
-        TextView time = u.text("", 11, u.muted, false);
-        top.addView(time);
-        card.addView(top);
-        u.gap(card, 11);
-        TextView title = u.text("", 16, u.ink, true);
-        title.setMaxLines(2);
-        title.setEllipsize(TextUtils.TruncateAt.END);
-        card.addView(title);
-        u.gap(card, 5);
-        TextView body = u.text("", 14, u.muted, false);
-        body.setMaxLines(3);
-        body.setEllipsize(TextUtils.TruncateAt.END);
-        body.setLineSpacing(u.d(3), 1);
-        card.addView(body);
-        u.gap(card, 10);
-        TextView meta = u.text("", 11, u.accent, false);
-        card.addView(meta);
-        h = new RowHolder(icon, app, time, title, body, meta);
-        outer.setTag(h);
-        convert = outer;
-      } else h = (RowHolder) convert.getTag();
-      Record r = rows.get(position);
-      h.app.setText(r.app);
-      h.time.setText(
-          date(r.firstSeen, r.firstSeen >= Store.todayStart() ? "HH:mm" : "MM/dd HH:mm"));
-      h.title.setText(r.title.isEmpty() ? "沒有標題的通知" : r.title);
-      h.body.setText(r.text.isEmpty() ? "來源 App 未提供可讀取的文字內容。" : r.text);
-      h.meta.setText(
-          (r.favorite ? "已收藏  ·  " : "")
-              + (r.active && CaptureService.connected
-                  ? "仍在通知列"
-                  : r.removed > 0 ? "已移除，紀錄已保留" : "已保存")
-              + (r.imageCount>0?"  ·  "+r.imageCount+" 張圖片":(!"none".equals(r.imageStatus)?"  ·  圖片未保存":""))
-              + (r.versions > 1 ? "  ·  " + r.versions + " 個版本" : ""));
-      try {
-        h.icon.setImageDrawable(getPackageManager().getApplicationIcon(r.pkg));
-      } catch (Exception e) {
-        h.icon.setImageResource(android.R.drawable.ic_dialog_info);
-      }
-      return convert;
-    }
-  }
-
-  private static final class RowHolder {
-    final ImageView icon;
-    final TextView app, time, title, body, meta;
-
-    RowHolder(ImageView i, TextView a, TextView t, TextView h, TextView b, TextView m) {
-      icon = i;
-      app = a;
-      time = t;
-      title = h;
-      body = b;
-      meta = m;
-    }
-  }
-
   private void detail(Record r) {
+    if (loadingDetail || AppDialog.hasOpen(this)) return;
+    loadingDetail = true;
+    int requestedGeneration = generation;
     Store.IO.execute(
         () -> {
           try {
             JSONArray versions = Store.get(this).versions(r.id);
-            JSONArray images=Store.get(this).recordImages(r.id);
-            runOnUiThread(() -> showDetail(r, versions,images));
+            JSONArray images = Store.get(this).recordImages(r.id);
+            runOnUiThread(() -> {
+              loadingDetail = false;
+              if (resumed && requestedGeneration == generation && !AppDialog.hasOpen(this)) {
+                showDetail(r, versions, images);
+              }
+            });
           } catch (Exception e) {
-            showError("無法讀取更新歷程");
+            runOnUiThread(() -> {
+              loadingDetail = false;
+              toast("無法讀取通知詳情");
+            });
           }
         });
   }
 
-  private void showDetail(Record r, JSONArray versions,JSONArray images) {
-    if (isDestroyed()) return;
+  private void showDetail(Record record, JSONArray versions, JSONArray images) {
+    if (isDestroyed() || isFinishing()) return;
+    ScrollView scroll = new ScrollView(this);
+    scroll.setClipToPadding(false);
+    scroll.setVerticalScrollBarEnabled(false);
     LinearLayout body = dialogBody();
-    TextView app =
-        u.text(r.app + " · " + date(r.firstSeen, "yyyy/MM/dd HH:mm:ss"), 12, u.muted, false);
-    body.addView(app);
-    u.gap(body, 12);
-    TextView title = u.text(r.title.isEmpty() ? "通知詳情" : r.title, 23, u.ink, true);
-    title.setTextIsSelectable(true);
-    body.addView(title);
-    u.gap(body, 12);
-    TextView text = u.text(r.text.isEmpty() ? "來源 App 沒有提供文字內容。" : r.text, 16, u.ink, false);
-    text.setTextIsSelectable(true);
-    text.setLineSpacing(u.d(5), 1);
-    body.addView(text);
-    ImageGallery.add(this,u,body,images,r.imageStatus,true);
-    u.gap(body, 16);
-    body.addView(
-        u.text(
-            r.active && CaptureService.connected
-                ? "仍在通知列"
-                : r.removed > 0
-                    ? EventPolicy.removalLabel(r.reason) + " · " + date(r.removed, "MM/dd HH:mm:ss")
-                    : "已保存 · 目前通知狀態未知",
-            12,
-            u.muted,
-            false));
-    if (!r.note.isEmpty()) {
-      u.gap(body, 16);
-      body.addView(u.text("備註", 13, u.accent, true));
-      body.addView(u.text(r.note, 15, u.ink, false));
-    }
-    u.gap(body, 18);
-    TextView favorite = u.button(r.favorite ? "移除收藏" : "加入收藏", true);
-    body.addView(favorite);
-    favorite.setOnClickListener(
-        v -> {
-          r.favorite = !r.favorite;
-          favorite.setText(r.favorite ? "移除收藏" : "加入收藏");
-          boolean selected = r.favorite;
-          mutate(() -> Store.get(this).favorite(r.id, selected), null);
-        });
-    u.gap(body, 10);
-    LinearLayout actions = u.row();
-    TextView copy = u.button("複製內容", false), note = u.button("編輯備註", false);
-    actions.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
-    LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(0, -2, 1);
-    np.setMargins(u.d(8), 0, 0, 0);
-    actions.addView(note, np);
-    body.addView(actions);
-    copy.setOnClickListener(
-        v -> {
-          ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE))
-              .setPrimaryClip(ClipData.newPlainText("通知", r.title + "\n" + r.text));
-          toast("已複製通知內容");
-        });
-    note.setOnClickListener(v -> editNote(r));
-    Intent launch = getPackageManager().getLaunchIntentForPackage(r.pkg);
-    if (launch != null) {
-      u.gap(body, 10);
-      TextView open = u.button("開啟來源 App", false);
-      body.addView(open);
-      open.setOnClickListener(
-          v -> {
-            try {
-              startActivity(launch);
-            } catch (Exception e) {
-              toast("無法開啟來源 App");
-            }
-          });
-    }
-    if (versions.length() > 1) {
-      u.gap(body, 24);
-      body.addView(u.text("更新歷程 · " + versions.length() + " 個版本", 16, u.ink, true));
-      for (int i = 0; i < versions.length(); i++) {
-        JSONObject x = versions.optJSONObject(i);
-        u.gap(body, 16);
-        body.addView(u.text(date(x.optLong("time"), "MM/dd HH:mm:ss"), 12, u.accent, true));
-        TextView version =
-            u.text(x.optString("title") + "\n" + x.optString("body"), 14, u.muted, false);
-        version.setTextIsSelectable(true);
-        body.addView(version);
-        ImageGallery.add(this,u,body,x.optJSONArray("images"),x.optString("image_status","none"),false);
-      }
-    }
-    AppDialog dialog = sheet("通知詳情", body);
-    u.gap(body, 20);
-    TextView delete = u.button("刪除此筆紀錄", false);
-    body.addView(delete);
-    delete.setOnClickListener(
-        v ->
-            new AppDialog.Builder(this)
-                .setTitle("刪除這筆紀錄？")
-                .setMessage("會一併刪除更新歷程與不再使用的圖片；不影響來源 App。此操作無法復原。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton(
-                    "刪除",
-                    (d, w) -> {
-                      mutate(() -> Store.get(this).delete(r.id), "已刪除紀錄");
-                      dialog.dismiss();
-                    })
-                .show());
-  }
+    scroll.addView(body);
 
-  private void imageSetting(LinearLayout parent) {
-    LinearLayout row=u.row(); row.setPadding(u.d(16),u.d(12),u.d(8),u.d(12)); row.setBackground(u.shape(u.surface,18));
-    LinearLayout copy=u.column(); copy.addView(u.text("保存通知圖片",16,u.ink,true));
-    TextView hint=u.text("每則最多 4 張 · 每張 256 KB\n壓縮至最長邊 1440 px；關閉只影響新通知。",12,u.muted,false); copy.addView(hint);
-    row.addView(copy,new LinearLayout.LayoutParams(0,-2,1)); RecordSwitch control=new RecordSwitch(this); control.setContentDescription("保存通知圖片"); control.setEnabled(false); row.addView(control);
-    parent.addView(row); u.gap(parent,8);
-    Store.IO.execute(()->{
-      boolean enabled=!"0".equals(Store.get(this).setting("save_images","1"));
-      runOnUiThread(()->{
-        if(isDestroyed())return; control.setChecked(enabled); control.setEnabled(true);
-        control.setOnCheckedChangeListener((button,checked)->{
-          control.setEnabled(false);
-          Store.IO.execute(()->{
-            boolean success=true; try { Store.get(this).putSetting("save_images",checked?"1":"0"); } catch(Exception e) { success=false; }
-            boolean saved=success; runOnUiThread(()->{ if(isDestroyed())return; if(!saved) { control.setOnCheckedChangeListener(null); control.setChecked(!checked); imageSettingRefresh(); } control.setEnabled(true); toast(saved?(checked?"之後收到的通知將嘗試保存圖片":"已關閉圖片記錄；既有圖片保留"):"無法儲存圖片設定"); });
-          });
-        });
+    LinearLayout source = u.row();
+    ImageView icon = new ImageView(this);
+    icon.setImageDrawable(u.appIcon(record.pkg));
+    icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+    source.addView(icon, new LinearLayout.LayoutParams(u.d(34), u.d(34)));
+    LinearLayout sourceText = u.column();
+    sourceText.addView(u.text(record.app, 15, u.ink, true));
+    sourceText.addView(u.text(date(record.firstSeen, "yyyy/MM/dd HH:mm:ss"), 12, u.muted, false));
+    LinearLayout.LayoutParams sourceParams = new LinearLayout.LayoutParams(0, -2, 1);
+    sourceParams.setMarginStart(u.d(10));
+    source.addView(sourceText, sourceParams);
+    body.addView(source);
+
+    u.gap(body, 13);
+    TextView title = u.text(record.title.isEmpty() ? "無標題的通知" : record.title, 23, u.ink, true);
+    title.setTextIsSelectable(true);
+    u.heading(title);
+    body.addView(title);
+    String status = record.active && CaptureService.connected ? "仍在通知列"
+        : record.removed > 0 ? EventPolicy.removalLabel(record.reason) + " · " + date(record.removed, "MM/dd HH:mm:ss")
+        : "已保存 · 目前通知狀態未知";
+    body.addView(u.text(status, 12, u.muted, false));
+    u.gap(body, 14);
+
+    LinearLayout actions = u.row();
+    TextView favorite = u.button(record.favorite ? "移除收藏" : "加入收藏", true);
+    TextView copy = u.button("複製內容", false);
+    actions.addView(favorite, new LinearLayout.LayoutParams(0, -2, 1));
+    LinearLayout.LayoutParams copyParams = new LinearLayout.LayoutParams(0, -2, 1);
+    copyParams.setMarginStart(u.d(8));
+    actions.addView(copy, copyParams);
+    body.addView(actions);
+    favorite.setOnClickListener(v -> {
+      boolean selected = !record.favorite;
+      favorite.setEnabled(false);
+      mutate(() -> Store.get(this).favorite(record.id, selected), null, saved -> {
+        if (saved) record.favorite = selected;
+        favorite.setText(record.favorite ? "移除收藏" : "加入收藏");
+        favorite.setEnabled(true);
       });
     });
-  }
-  private void imageSettingRefresh() { if("settings".equals(page))build(); }
+    copy.setOnClickListener(v -> {
+      getSystemService(ClipboardManager.class).setPrimaryClip(
+          ClipData.newPlainText("通知", record.title + "\n" + record.text));
+      toast("已複製通知內容");
+    });
 
-  private void editNote(Record r) {
-    EditText input = edit("輸入備註");
-    input.setText(r.note);
-    new AppDialog.Builder(this)
-        .setTitle("通知備註")
-        .setView(input)
+    LinearLayout message = detailPanel(body, "通知內容");
+    TextView text = u.text(record.text.isEmpty() ? "來源 App 未提供文字內容。" : record.text, 16, u.ink, false);
+    text.setTextIsSelectable(true);
+    text.setLineSpacing(u.d(4), 1);
+    message.addView(text);
+    ImageGallery.add(this, u, message, images, record.imageStatus, true);
+
+    LinearLayout notes = detailPanel(body, "備註");
+    TextView noteText = u.text(noteSummary(record), 15, u.ink, false);
+    noteText.setTextIsSelectable(true);
+    notes.addView(noteText);
+    u.gap(notes, 8);
+    TextView editNote = u.button("編輯備註", false);
+    editNote.setOnClickListener(v -> editNote(record, noteText));
+    notes.addView(editNote);
+
+    if (versions.length() > 1) {
+      LinearLayout history = detailPanel(body, "更新歷程 · " + versions.length() + " 個版本");
+      for (int i = 0; i < versions.length(); i++) {
+        JSONObject version = versions.optJSONObject(i);
+        if (i > 0) u.gap(history, 12);
+        history.addView(u.text(date(version.optLong("time"), "MM/dd HH:mm:ss"), 12, u.accent, true));
+        TextView versionText = u.text(version.optString("title") + "\n" + version.optString("body"), 14, u.ink, false);
+        versionText.setTextIsSelectable(true);
+        history.addView(versionText);
+        ImageGallery.add(this, u, history, version.optJSONArray("images"),
+            version.optString("image_status", "none"), false);
+      }
+    }
+
+    Intent launch = getPackageManager().getLaunchIntentForPackage(record.pkg);
+    if (launch != null) {
+      u.gap(body, 12);
+      TextView open = u.button("開啟來源 App", false);
+      body.addView(open);
+      open.setOnClickListener(v -> {
+        try {
+          startActivity(launch);
+        } catch (Exception e) {
+          toast("無法開啟來源 App");
+        }
+      });
+    }
+
+    u.gap(body, 12);
+    TextView delete = u.button("刪除此筆紀錄", false);
+    u.ripple(delete, u.bg, 16);
+    delete.setTextColor(u.danger);
+    body.addView(delete);
+    AppDialog detail = new AppDialog.Builder(this).setTitle("通知詳情")
+        .setExpandedView(scroll).setPositiveButton("完成", null).show();
+    delete.setOnClickListener(v -> new AppDialog.Builder(this)
+        .setTitle("刪除這筆紀錄？")
+        .setMessage("會一併刪除更新歷程與不再使用的圖片。此操作無法復原，來源 App 不受影響。")
         .setNegativeButton("取消", null)
-        .setPositiveButton(
-            "儲存",
-            (d, w) -> {
-              String text = input.getText().toString();
-              if (text.length() > 100000) {
-                toast("備註過長");
-                return;
-              }
-              r.note = text;
-              mutate(() -> Store.get(this).note(r.id, text), "備註已儲存");
-            })
-        .show();
+        .setPositiveButton("刪除", (dialog, which) ->
+            mutate(() -> Store.get(this).delete(record.id), "已刪除紀錄", saved -> {
+              if (saved) detail.dismiss();
+            }))
+        .show());
+  }
+
+  private LinearLayout detailPanel(LinearLayout parent, String label) {
+    u.gap(parent, 12);
+    LinearLayout panel = u.column();
+    panel.setPadding(u.d(14), u.d(12), u.d(14), u.d(12));
+    panel.setBackground(u.outline(u.bg, 18));
+    TextView heading = u.text(label, 14, u.accent, true);
+    u.heading(heading);
+    panel.addView(heading);
+    u.gap(panel, 7);
+    parent.addView(panel);
+    return panel;
+  }
+
+  private String noteSummary(Record record) {
+    return record.note.isEmpty() ? "尚未加入備註" : record.note;
+  }
+
+  private void editNote(Record record, TextView summary) {
+    EditText input = u.field("輸入備註");
+    input.setText(record.note);
+    AppDialog dialog = new AppDialog.Builder(this).setTitle("通知備註").setView(input)
+        .setNegativeButton("取消", null).setPositiveButton("儲存", null).create();
+    dialog.setOnShowListener(d -> dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+      String text = input.getText().toString();
+      if (text.length() > 100000) {
+        input.setError("備註最多 100,000 個字元");
+        return;
+      }
+      v.setEnabled(false);
+      mutate(() -> Store.get(this).note(record.id, text), "備註已儲存", saved -> {
+        if (saved) {
+          record.note = text;
+          summary.setText(noteSummary(record));
+          dialog.dismiss();
+        } else {
+          v.setEnabled(true);
+        }
+      });
+    }));
+    dialog.show();
   }
 
   private void buildSettings() {
-    ScrollView scroll = new ScrollView(this);
-    scroll.setFillViewport(true);
+    pageTitle(content, "偏好設定", "settings");
+    settingsScroll = new ScrollView(this);
+    settingsScroll.setTag("settings_scroll");
+    settingsScroll.setFillViewport(true);
+    settingsScroll.setVerticalScrollBarEnabled(false);
     LinearLayout body = u.column();
-    body.setPadding(0, 0, 0, u.d(24));
-    scroll.addView(body);
-    content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
-    title(body, "YOUR NOTIFICATIONS, YOURS.", "照你的方式保存", "免費、無廣告，通知留在自己的手機。 ");
-    LinearLayout inner = u.column();
-    inner.setPadding(u.d(20), 0, u.d(20), 0);
-    body.addView(inner);
-    section(inner, "權限與背景運作");
-    settingRow(inner, "權限設定精靈", "檢查通知存取權，依序完成必要設定", "check", () -> permissionGuide.restart());
-    settingRow(inner,"通知診斷","連線狀態、來源排除與最近處理結果","check",()->Diagnostics.show(this));
-    settingRow(inner, "背景運作說明", "Samsung 與省電模式設定建議", "bell", () -> permissionGuide.backgroundHelp());
-    section(inner, "記錄管理");
-    settingRow(
-        inner,
-        "通知存取權",
-        hasAccess() ? "已授權 · 點選檢查記錄狀態" : "尚未開啟 · 開始記錄前需要授權",
-        "bell",
-        this::accessDialog);
-    LinearLayout recording=u.row(); recording.setPadding(u.d(16),u.d(12),u.d(8),u.d(12));
-    recording.setBackground(u.shape(u.surface,18));
-    LinearLayout recordingText=u.column(); recordingText.addView(u.text("記錄通知",16,u.ink,true));
-    TextView state=u.text(recordingState(),12,u.muted,false); recordStates.add(state); recordingText.addView(state);
-    recording.addView(recordingText,new LinearLayout.LayoutParams(0,-2,1)); recording.addView(recordSwitch());
-    inner.addView(recording); u.gap(inner,8);
-    imageSetting(inner);
-    settingRow(inner, "選擇記錄來源", "全部已安裝 App · 搜尋、分類與排除", "settings", this::manageApps);
-    settingRow(
-        inner,
-        "保存期限",
-        retention.equals("0") ? "持續保留 · 不自動刪除" : retention + " 天 · 收藏不受影響",
-        "bell",
-        this::chooseRetention);
-    section(inner, "備份與資料");
-    settingRow(inner, "建立備份", "匯出通知、圖片與歷程，可使用密碼加密", "backup", this::exportDialog);
-    settingRow(inner, "自動加密備份", "每日備份至指定資料夾，可設定保留份數", "backup", this::autoBackupDialog);
-    backupStatus=u.text(AutoBackup.status(this),12,u.muted,false); inner.addView(backupStatus);
-    settingRow(inner, "還原備份", "預覽後合併匯入，略過重複紀錄", "backup", this::chooseImport);
-    settingRow(
-        inner,
-        "儲存概況",
-        format(counts[0]) + " 則通知 · " + databaseSize(),
-        "settings",
-        this::storageDialog);
-    settingRow(
-        inner,
-        "清除未收藏紀錄",
-        "保留收藏，刪除其餘通知與歷程",
-        "settings",
-        () ->
-            new AppDialog.Builder(this)
-                .setTitle("清除所有未收藏紀錄？")
-                .setMessage("此操作無法復原。建議先建立備份。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton(
-                    "清除", (d, w) -> mutate(() -> Store.get(this).clearUnstarred(), "已清除未收藏紀錄"))
-                .show());
-    section(inner, "App 更新");
-    settingRow(inner, "檢查新版本", UpdateChecker.cached(this).message, "backup", this::checkForUpdates);
-    LinearLayout updateRow=u.row(); updateRow.setPadding(u.d(16),u.d(12),u.d(8),u.d(12));
-    updateRow.setBackground(u.shape(u.surface,18));
-    LinearLayout updateText=u.column(); updateText.addView(u.text("自動檢查更新",16,u.ink,true));
-    updateText.addView(u.text("預設開啟 · 每次進入 App 檢查 GitHub\n只傳送一般連線資訊，不會上傳通知內容。可隨時關閉。",12,u.muted,false));
-    RecordSwitch updateSwitch=new RecordSwitch(this); updateSwitch.setContentDescription("自動檢查更新"); updateSwitch.setTag("update_check");
-    updateSwitch.setChecked(UpdateChecker.enabled(this));
-    updateSwitch.setOnCheckedChangeListener((button,checked)->{ UpdateChecker.enable(this,checked); updateFlow.automaticChanged(); });
-    updateRow.addView(updateText,new LinearLayout.LayoutParams(0,-2,1)); updateRow.addView(updateSwitch); inner.addView(updateRow); u.gap(inner,8);
-    settingRow(inner, "包含測試版", UpdateChecker.previews(this) ? "已開啟 · 可收到 Alpha / Beta 版本" : "只接收正式版本",
+    body.setPadding(pageInset(), 0, pageInset(), u.d(24));
+    settingsScroll.addView(body);
+    content.addView(settingsScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+
+    LinearLayout recording = settingGroup(body, "記錄與來源");
+    TextView state = addSetting(recording, "記錄通知", recordingState(), "bell", recordSwitch(false), null);
+    recordStates.add(state);
+    accessSummary = settingRow(recording, "通知存取權", "", "lock", this::accessDialog);
+    settingRow(recording, "選擇記錄來源", "搜尋已安裝 App，調整要記錄的來源", "apps", this::manageApps);
+    imageSetting(recording);
+    retentionSummary = settingRow(recording, "保存期限", "", "clock", this::chooseRetention);
+
+    LinearLayout data = settingGroup(body, "備份與儲存");
+    settingRow(data, "建立備份", "匯出通知、圖片與歷程，可使用密碼加密", "backup", this::exportDialog);
+    settingRow(data, "還原備份", "預覽後合併匯入，略過重複紀錄", "backup", this::chooseImport);
+    backupStatus = settingRow(data, "自動加密備份", AutoBackup.status(this), "lock", this::autoBackupDialog);
+    storageSummary = settingRow(data, "儲存概況", format(counts[0]) + " 則通知", "apps", this::storageDialog);
+
+    LinearLayout diagnostics = settingGroup(body, "權限與診斷");
+    settingRow(diagnostics, "通知診斷", "連線狀態、來源排除與最近處理結果", "check", () -> Diagnostics.show(this));
+    settingRow(diagnostics, "權限設定精靈", "依序完成通知權限設定", "lock", () -> permissionGuide.restart());
+    settingRow(diagnostics, "背景運作說明", "Samsung 與省電模式設定建議", "bell", () -> permissionGuide.backgroundHelp());
+
+    LinearLayout updates = settingGroup(body, "版本與更新");
+    settingRow(updates, "檢查新版本", UpdateChecker.cached(this).message, "check", this::checkForUpdates);
+    RecordSwitch update = new RecordSwitch(this);
+    update.setContentDescription("自動檢查更新");
+    update.setTag("update_check");
+    update.setChecked(UpdateChecker.enabled(this));
+    update.setOnCheckedChangeListener((button, checked) -> {
+      UpdateChecker.enable(this, checked);
+      updateFlow.automaticChanged();
+    });
+    addSetting(updates, "自動檢查更新", "進入 App 時向 GitHub 檢查新版本", "clock", update, null);
+    settingRow(updates, "包含測試版",
+        UpdateChecker.previews(this) ? "已開啟 · 可收到 Alpha / Beta 版本" : "只接收正式版本",
         "settings", () -> {
           UpdateChecker.setPreviews(this, !UpdateChecker.previews(this));
-          updateFlow.automaticChanged(); build();
+          updateFlow.automaticChanged();
+          build();
         });
-    settingRow(inner, "更新下載與安裝", "自動下載、非計量網路與安裝偏好", "backup", this::upgradeOptions);
-    settingRow(inner, "安裝已下載更新", "驗證通過後交由 Android 處理", "check", this::installDownloaded);
-    upgradeStatus=u.text(UpgradeManager.status(this),12,u.muted,false); inner.addView(upgradeStatus);
-    settingRow(inner, "更新通知權限", getSystemService(android.app.NotificationManager.class).areNotificationsEnabled()
-        ? "點選管理更新通知頻道" : "尚未允許通知 · 仍可手動檢查", "bell", () -> {
+    settingRow(updates, "更新下載與安裝", "自動下載、非計量網路與安裝偏好", "backup", this::upgradeOptions);
+    upgradeStatus = settingRow(updates, "安裝已下載更新", UpgradeManager.status(this), "check", this::installDownloaded);
+    settingRow(updates, "更新通知權限", getSystemService(android.app.NotificationManager.class).areNotificationsEnabled()
+        ? "管理更新通知頻道" : "尚未允許通知 · 仍可手動檢查", "bell", () -> {
           Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
           intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
           startActivity(intent);
         });
-    section(inner, "關於 HuangNotify");
-    settingRow(inner, "隱私與記錄範圍", "版本檢查與更新下載連線，通知內容不會上傳", "check", this::privacyDialog);
-    TextView about = u.text("HuangNotify " + BuildConfig.VERSION_NAME + "\nMIT 開源授權 · 為每一則通知留一份紀錄", 12, u.muted, false);
-    about.setGravity(Gravity.CENTER);
-    about.setPadding(0, u.d(24), 0, 0);
-    inner.addView(about);
+
+    LinearLayout cleanup = settingGroup(body, "資料清理");
+    settingRow(cleanup, "清除已保存圖片", "保留文字、歷程、收藏與備註", "trash", this::clearImagesDialog);
+    settingRow(cleanup, "清除未收藏紀錄", "保留收藏，刪除其餘通知與歷程", "trash",
+        () -> new AppDialog.Builder(this)
+            .setTitle("清除所有未收藏紀錄？")
+            .setMessage("此操作無法復原。建議先建立備份。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("清除", (dialog, which) ->
+                mutate(() -> Store.get(this).clearUnstarred(), "已清除未收藏紀錄"))
+            .show());
+
+    LinearLayout about = settingGroup(body, "關於 HuangNotify");
+    settingRow(about, "隱私與記錄範圍", "查看通知如何保存在手機", "lock", this::privacyDialog);
+    TextView version = u.text("HuangNotify " + BuildConfig.VERSION_NAME + " · MIT 開源授權", 12, u.muted, false);
+    version.setGravity(Gravity.CENTER);
+    version.setPadding(0, u.d(18), 0, 0);
+    body.addView(version);
+    if (settingsScrollY != 0) {
+      ScrollView scroll = settingsScroll;
+      int position = settingsScrollY;
+      scroll.post(() -> scroll.scrollTo(0, position));
+    }
+  }
+
+  private void imageSetting(LinearLayout parent) {
+    RecordSwitch control = new RecordSwitch(this);
+    control.setContentDescription("保存通知圖片");
+    control.setEnabled(false);
+    addSetting(parent, "保存通知圖片", "每則最多 4 張 · 關閉只影響新通知", "image", control, null);
+    Store.IO.execute(() -> {
+      boolean enabled = !"0".equals(Store.get(this).setting("save_images", "1"));
+      runOnUiThread(() -> {
+        if (isDestroyed() || !control.isAttachedToWindow()) return;
+        control.setChecked(enabled);
+        control.setEnabled(true);
+        control.setOnCheckedChangeListener((button, checked) -> {
+          control.setEnabled(false);
+          mutate(() -> Store.get(this).putSetting("save_images", checked ? "1" : "0"),
+              checked ? "已開啟圖片記錄" : "已關閉圖片記錄，既有圖片保留", saved -> {
+                if (!saved) {
+                  control.setOnCheckedChangeListener(null);
+                  control.setChecked(!checked);
+                  if (page.equals("settings")) build();
+                }
+                control.setEnabled(true);
+              });
+        });
+      });
+    });
   }
 
   private void autoBackupDialog() {
@@ -944,9 +1105,10 @@ public final class MainActivity extends Activity {
   private void autoBackupPassword(Uri tree) {
     LinearLayout body=u.column();
     body.addView(u.text("每天加密備份。新檔成功寫入並驗證後，才清理超過保留份數的本 App 自動備份。手動備份與其他檔案不會清除。\n請記住密碼，遺失後無法還原。變更密碼只影響新備份，舊檔仍需原密碼。",14,u.muted,false));
-    EditText password=edit("備份密碼（至少 8 個字元）"), confirm=edit("再次輸入密碼");
+    EditText password=u.field("備份密碼（至少 8 個字元）"), confirm=u.field("再次輸入密碼");
     password.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD); confirm.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
-    body.addView(password); body.addView(confirm); int[] keep={AutoBackup.keep(this)};
+    u.gap(body, 12); body.addView(password); u.gap(body, 8); body.addView(confirm); u.gap(body, 8);
+    int[] keep={AutoBackup.keep(this)};
     TextView retentionButton=u.button("保留 "+keep[0]+" 份",false); body.addView(retentionButton);
     retentionButton.setOnClickListener(v->new AppDialog.Builder(this).setTitle("保留幾份自動備份？")
       .setSingleChoiceItems(new String[]{"3 份","7 份","14 份","30 份"},keep[0]==3?0:keep[0]==7?1:keep[0]==14?2:3,(d,i)->{ keep[0]=new int[]{3,7,14,30}[i]; retentionButton.setText("保留 "+keep[0]+" 份"); d.dismiss(); }).show());
@@ -1004,31 +1166,58 @@ public final class MainActivity extends Activity {
     toast("正在檢查 GitHub 版本…"); updateFlow.check(true);
   }
 
-  private void section(LinearLayout parent, String title) {
-    u.gap(parent, 18);
-    TextView t = u.text(title, 13, u.accent, true);
-    t.setPadding(u.d(4), 0, 0, u.d(10));
-    parent.addView(t);
+  private LinearLayout settingGroup(LinearLayout parent, String label) {
+    u.gap(parent, 13);
+    TextView title = u.text(label, 15, u.accent, true);
+    title.setPaddingRelative(u.d(3), 0, 0, u.d(8));
+    u.heading(title);
+    parent.addView(title);
+
+    LinearLayout group = u.column();
+    group.setBackground(u.outline(u.surface, 20));
+    group.setClipToOutline(true);
+    parent.addView(group, new LinearLayout.LayoutParams(-1, -2));
+    return group;
   }
 
-  private void settingRow(
-      LinearLayout parent, String title, String subtitle, String icon, Runnable action) {
+  private TextView settingRow(LinearLayout parent, String title, String subtitle, String icon, Runnable action) {
+    return addSetting(parent, title, subtitle, icon, null, action);
+  }
+
+  private TextView addSetting(LinearLayout parent, String title, String subtitle, String icon,
+      View control, Runnable action) {
     LinearLayout row = u.row();
-    row.setPadding(u.d(16), u.d(16), u.d(12), u.d(16));
-    u.ripple(row, u.surface, 18);
-    row.addView(u.icon(icon, u.accent), new LinearLayout.LayoutParams(u.d(24), u.d(24)));
+    row.setMinimumHeight(u.d(64));
+    row.setPaddingRelative(u.d(12), u.d(10), u.d(10), u.d(10));
+    int color = icon.equals("trash") ? u.danger : u.accent;
+    row.addView(u.iconTile(icon, color, u.pale, 12), new LinearLayout.LayoutParams(u.d(36), u.d(36)));
     LinearLayout text = u.column();
-    LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, -2, 1);
-    tp.setMargins(u.d(14), 0, u.d(8), 0);
-    row.addView(text, tp);
-    text.addView(u.text(title, 16, u.ink, true));
-    u.gap(text, 4);
-    text.addView(u.text(subtitle, 12, u.muted, false));
-    row.addView(u.text("›", 24, u.muted, false));
-    parent.addView(row);
-    u.gap(parent, 8);
-    row.setFocusable(true);
-    row.setOnClickListener(v -> action.run());
+    LinearLayout.LayoutParams textParams = new LinearLayout.LayoutParams(0, -2, 1);
+    textParams.setMarginStart(u.d(11));
+    textParams.setMarginEnd(u.d(8));
+    row.addView(text, textParams);
+    text.addView(u.text(title, 16, icon.equals("trash") ? u.danger : u.ink, true));
+    TextView hint = u.text(subtitle, 13, u.muted, false);
+    hint.setPadding(0, u.d(2), 0, 0);
+    text.addView(hint);
+    if (action != null) {
+      u.ripple(row, Color.TRANSPARENT, 0);
+      row.addView(u.icon("next", u.muted), new LinearLayout.LayoutParams(u.d(20), u.d(20)));
+      row.setFocusable(true);
+      row.setOnClickListener(v -> action.run());
+    } else {
+      row.addView(control);
+    }
+    if (parent.getChildCount() > 0) {
+      View divider = new View(this);
+      divider.setBackgroundColor(u.line);
+      LinearLayout.LayoutParams dividerParams = new LinearLayout.LayoutParams(-1, u.d(1));
+      dividerParams.setMarginStart(u.d(59));
+      dividerParams.setMarginEnd(u.d(12));
+      parent.addView(divider, dividerParams);
+    }
+    parent.addView(row, new LinearLayout.LayoutParams(-1, -2));
+    return hint;
   }
 
   private void accessDialog() {
@@ -1181,40 +1370,36 @@ public final class MainActivity extends Activity {
     return b;
   }
 
-  private AppDialog sheet(String title, LinearLayout body) {
-    return new AppDialog.Builder(this).setTitle(title).setView(body).setPositiveButton("完成", null).show();
-  }
-
-  private EditText edit(String hint) {
-    EditText e = new EditText(this);
-    e.setTextColor(u.ink);
-    e.setHintTextColor(u.muted);
-    e.setHint(hint);
-    e.setTextSize(15);
-    e.setPadding(u.d(16), u.d(12), u.d(16), u.d(12));
-    e.setBackground(u.shape(u.pale, 14));
-    e.setMinHeight(u.d(52));
-    return e;
-  }
-
   private interface Work {
     void run() throws Exception;
   }
 
   private void mutate(Work work, String message) {
-    Store.IO.execute(
-        () -> {
-          try {
-            work.run();
-            runOnUiThread(
-                () -> {
-                  refresh();
-                  if (message != null) toast(message);
-                });
-          } catch (Exception e) {
-            showError("儲存失敗，請檢查手機剩餘空間");
-          }
-        });
+    mutate(work, message, null);
+  }
+
+  private void mutate(Work work, String message, java.util.function.Consumer<Boolean> finished) {
+    Store.IO.execute(() -> {
+      boolean success;
+      try {
+        work.run();
+        success = true;
+      } catch (Exception e) {
+        success = false;
+      }
+      boolean saved = success;
+      runOnUiThread(() -> {
+        if (isDestroyed()) return;
+        if (finished != null) finished.accept(saved);
+        if (saved) {
+          generation++;
+          refresh();
+          if (message != null) toast(message);
+        } else {
+          toast("儲存失敗，請檢查手機剩餘空間");
+        }
+      });
+    });
   }
 
   private void showError(String message) {
