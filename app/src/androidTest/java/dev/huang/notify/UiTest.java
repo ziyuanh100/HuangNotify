@@ -1,11 +1,23 @@
 package dev.huang.notify;
 
+import android.annotation.TargetApi;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Rect;
+import android.os.Build;
+import android.os.Handler;
 import android.test.ActivityInstrumentationTestCase2;
+import android.view.PixelCopy;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 
 @SuppressWarnings("deprecation")
 public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
@@ -58,6 +70,80 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
     getInstrumentation().waitForIdleSync();
     assertTrue(nav.findViewWithTag("nav_favorites").isSelected());
     assertNotNull(find(decor, "收藏通知"));
+  }
+
+  @TargetApi(33)
+  public void testGlassNavigationRefractsAndRefreshesItsBackdrop() throws Exception {
+    if (Build.VERSION.SDK_INT < 33) return;
+    MainActivity activity = getActivity();
+    getInstrumentation().waitForIdleSync();
+    GlassNavigation nav = activity.getWindow().getDecorView().findViewWithTag("floating_nav");
+    FrameLayout host = (FrameLayout) nav.getParent();
+    View page = host.getChildAt(0);
+    Ui ui = new Ui(activity);
+
+    class Bands extends View {
+      final Paint blue = new Paint();
+      int depth = ui.d(13);
+
+      Bands() {
+        super(activity);
+        blue.setColor(Color.BLUE);
+      }
+
+      @Override protected void onDraw(Canvas canvas) {
+        canvas.drawColor(Color.RED);
+        canvas.drawRect(0, nav.getTop() - getTop() + depth, getWidth(), getHeight(), blue);
+      }
+    }
+
+    FutureTask<Bands> createBands = new FutureTask<>(Bands::new);
+    getInstrumentation().runOnMainSync(createBands);
+    Bands bands = createBands.get();
+    try {
+      int refracted = glassRimPixel(activity, nav, ui, () -> {
+        host.addView(bands, host.indexOfChild(nav), new FrameLayout.LayoutParams(-1, -1));
+        nav.setPageContent(bands);
+      });
+      assertTrue("Expected blue from inside the upper rim, got " + Integer.toHexString(refracted),
+          Color.blue(refracted) > Color.red(refracted) + 24);
+
+      int moved = glassRimPixel(activity, nav, ui, () -> {
+        bands.depth = ui.d(29);
+        bands.invalidate();
+        nav.invalidateBackdrop();
+      });
+      assertTrue("Expected red after the backdrop moved, got " + Integer.toHexString(moved),
+          Color.red(moved) > Color.blue(moved) + 24);
+    } finally {
+      getInstrumentation().runOnMainSync(() -> {
+        nav.setPageContent(page);
+        host.removeView(bands);
+      });
+    }
+  }
+
+  @TargetApi(29)
+  private int glassRimPixel(MainActivity activity, View nav, Ui ui, Runnable change) throws Exception {
+    CompletableFuture<Rect> frame = new CompletableFuture<>();
+    getInstrumentation().runOnMainSync(() -> {
+      change.run();
+      int[] location = new int[2];
+      nav.getLocationInWindow(location);
+      int x = location[0] + nav.getWidth() / 2;
+      int y = location[1] + ui.d(6);
+      nav.getViewTreeObserver().registerFrameCommitCallback(() -> frame.complete(new Rect(x, y, x + 1, y + 1)));
+    });
+    Bitmap pixel = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
+    try {
+      CompletableFuture<Integer> copied = new CompletableFuture<>();
+      PixelCopy.request(activity.getWindow(), frame.get(8, TimeUnit.SECONDS), pixel, copied::complete,
+          new Handler(activity.getMainLooper()));
+      assertEquals(PixelCopy.SUCCESS, copied.get(8, TimeUnit.SECONDS).intValue());
+      return pixel.getPixel(0, 0);
+    } finally {
+      pixel.recycle();
+    }
   }
 
   public void testRecordingSwitchPersistsAcrossPages() throws Exception {
