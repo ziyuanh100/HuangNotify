@@ -1,5 +1,6 @@
 package dev.huang.notify;
 
+import android.animation.ValueAnimator;
 import android.annotation.TargetApi;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -8,6 +9,9 @@ import android.graphics.Paint;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
+import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
+import android.provider.Settings;
 import android.test.ActivityInstrumentationTestCase2;
 import android.view.PixelCopy;
 import android.view.View;
@@ -15,6 +19,8 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
@@ -72,6 +78,63 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
     assertNotNull(find(decor, "收藏通知"));
   }
 
+  public void testRapidTabSwitchClearsOldHighlightWithAnimationsEnabled() throws Exception {
+    MainActivity activity = getActivity();
+    getInstrumentation().waitForIdleSync();
+    View nav = activity.getWindow().getDecorView().findViewWithTag("floating_nav");
+    View settings = nav.findViewWithTag("nav_settings");
+    View favorites = nav.findViewWithTag("nav_favorites");
+    TextView settingsLabel = (TextView) find(settings, "設定");
+    TextView favoritesLabel = (TextView) find(favorites, "收藏");
+    Ui ui = new Ui(activity);
+    String scale = Settings.Global.getString(activity.getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE);
+    boolean animationsWereEnabled = ValueAnimator.areAnimatorsEnabled();
+
+    try {
+      shell("settings put global animator_duration_scale 1.0");
+      awaitAnimatorState(true);
+      FutureTask<Void> rapidSwitch = new FutureTask<>(() -> {
+        // A click can run before Android dispatches the end of the pressed state.
+        settings.setPressed(true);
+        assertTrue(settings.performClick());
+        assertFalse("The first tap must clear its pressed highlight", settings.isPressed());
+        assertEquals("The destination must wait for the moving capsule", ui.ink, settingsLabel.getCurrentTextColor());
+
+        favorites.setPressed(true);
+        assertTrue(favorites.performClick());
+        assertFalse(favorites.isPressed());
+        assertTrue(favorites.isSelected());
+        assertFalse(settings.isSelected());
+        assertEquals(ui.ink, favoritesLabel.getCurrentTextColor());
+        return null;
+      });
+      getInstrumentation().runOnMainSync(rapidSwitch);
+      rapidSwitch.get();
+
+      long deadline = SystemClock.elapsedRealtime() + 5000;
+      do {
+        getInstrumentation().waitForIdleSync();
+        if (favoritesLabel.getCurrentTextColor() == ui.accent) break;
+        SystemClock.sleep(16);
+      } while (SystemClock.elapsedRealtime() < deadline);
+      assertEquals("Only the final tab receives the accent", ui.accent, favoritesLabel.getCurrentTextColor());
+      assertEquals(ui.ink, settingsLabel.getCurrentTextColor());
+    } finally {
+      shell(scale == null ? "settings delete global animator_duration_scale"
+          : "settings put global animator_duration_scale " + Float.parseFloat(scale));
+      awaitAnimatorState(animationsWereEnabled);
+    }
+  }
+
+  private void awaitAnimatorState(boolean enabled) {
+    long deadline = SystemClock.elapsedRealtime() + 8000;
+    while (ValueAnimator.areAnimatorsEnabled() != enabled && SystemClock.elapsedRealtime() < deadline) {
+      getInstrumentation().waitForIdleSync();
+      SystemClock.sleep(25);
+    }
+    assertEquals(enabled, ValueAnimator.areAnimatorsEnabled());
+  }
+
   @TargetApi(33)
   public void testGlassNavigationRefractsAndRefreshesItsBackdrop() throws Exception {
     if (Build.VERSION.SDK_INT < 33) return;
@@ -100,6 +163,13 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
     FutureTask<Bands> createBands = new FutureTask<>(Bands::new);
     getInstrumentation().runOnMainSync(createBands);
     Bands bands = createBands.get();
+    FutureTask<View> createReplacement = new FutureTask<>(() -> {
+      View replacement = new View(activity);
+      replacement.setBackgroundColor(Color.GREEN);
+      return replacement;
+    });
+    getInstrumentation().runOnMainSync(createReplacement);
+    View replacement = createReplacement.get();
     try {
       int refracted = glassRimPixel(activity, nav, ui, () -> {
         host.addView(bands, host.indexOfChild(nav), new FrameLayout.LayoutParams(-1, -1));
@@ -115,10 +185,19 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
       });
       assertTrue("Expected red after the backdrop moved, got " + Integer.toHexString(moved),
           Color.red(moved) > Color.blue(moved) + 24);
+
+      int swapped = glassRimPixel(activity, nav, ui, () -> {
+        host.removeView(bands);
+        host.addView(replacement, host.indexOfChild(nav), new FrameLayout.LayoutParams(-1, -1));
+        nav.setPageContent(replacement);
+      });
+      assertTrue("The first frame after a page swap should already use its new backdrop",
+          Color.green(swapped) > Math.max(Color.red(swapped), Color.blue(swapped)) + 24);
     } finally {
       getInstrumentation().runOnMainSync(() -> {
         nav.setPageContent(page);
         host.removeView(bands);
+        host.removeView(replacement);
       });
     }
   }
@@ -213,9 +292,16 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
       Store.IO.submit(() -> Store.get(activity).delete(record.id)).get();
     }
   }
-  private void capture(String name) throws Exception {
-    for(String command:new String[]{"mkdir -p /data/local/tmp/huangnotify-ui-preview", "screencap -p /data/local/tmp/huangnotify-ui-preview/"+name}) {
-      try(android.os.ParcelFileDescriptor fd=getInstrumentation().getUiAutomation().executeShellCommand(command); java.io.FileInputStream in=new java.io.FileInputStream(fd.getFileDescriptor())) { byte[] bytes=new byte[1024]; while(in.read(bytes)!=-1) {} }
+  private void capture(String name) throws IOException {
+    shell("mkdir -p /data/local/tmp/huangnotify-ui-preview");
+    shell("screencap -p /data/local/tmp/huangnotify-ui-preview/" + name);
+  }
+
+  private void shell(String command) throws IOException {
+    try (InputStream input = new ParcelFileDescriptor.AutoCloseInputStream(
+        getInstrumentation().getUiAutomation().executeShellCommand(command))) {
+      byte[] buffer = new byte[1024];
+      while (input.read(buffer) != -1) {}
     }
   }
   private RecordSwitch recordSwitch(View v) {
