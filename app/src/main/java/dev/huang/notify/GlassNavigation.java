@@ -14,8 +14,11 @@ import android.graphics.RenderEffect;
 import android.graphics.RenderNode;
 import android.graphics.RuntimeShader;
 import android.graphics.Shader;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.os.Build;
 import android.util.Log;
+import android.util.StateSet;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewOutlineProvider;
@@ -40,7 +43,7 @@ final class GlassNavigation extends LinearLayout {
   private LinearGradient glass, fallback, edge, reflection, selection, selectionEdge;
   private View pageContent;
   private boolean backdropDirty = true, recordingBackdrop;
-  private int selected = -1;
+  private int selected = -1, accentedTab = -1;
   private float indicator, stretch;
   private ValueAnimator animator;
 
@@ -71,15 +74,20 @@ final class GlassNavigation extends LinearLayout {
       tab.setGravity(Gravity.CENTER);
       tab.setMinimumHeight(u.d(52));
       tab.setPadding(u.d(3), u.d(4), u.d(3), u.d(4));
-      u.ripple(tab, Color.TRANSPARENT, 25);
+      StateListDrawable feedback = new StateListDrawable();
+      feedback.addState(new int[]{android.R.attr.state_pressed},
+          u.shape(u.dark ? 0x26ffffff : 0x20235e48, 25));
+      feedback.addState(new int[]{android.R.attr.state_focused}, u.outline(Color.TRANSPARENT, 25));
+      feedback.addState(StateSet.WILD_CARD, new ColorDrawable(Color.TRANSPARENT));
+      tab.setBackground(feedback);
       tab.setTag("nav_" + destination);
       tab.setContentDescription(LABELS[i]);
       tab.setFocusable(true);
       tab.setOnClickListener(v -> open.accept(destination));
 
-      icons[i] = u.icon(ICONS[i], u.muted);
+      icons[i] = u.icon(ICONS[i], u.ink);
       tab.addView(icons[i], new LayoutParams(u.d(22), u.d(22)));
-      labels[i] = u.text(LABELS[i], 12, u.muted, true);
+      labels[i] = u.text(LABELS[i], 12, u.ink, true);
       labels[i].setGravity(Gravity.CENTER);
       labels[i].setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
       LayoutParams label = new LayoutParams(-1, -2);
@@ -92,7 +100,9 @@ final class GlassNavigation extends LinearLayout {
   }
 
   void setPageContent(View content) {
+    if (pageContent == content) return;
     pageContent = content;
+    if (backdrop != null) backdrop.discard();
     invalidateBackdrop();
   }
 
@@ -108,37 +118,48 @@ final class GlassNavigation extends LinearLayout {
     if (index == selected) return;
     selected = index;
     for (int i = 0; i < tabs.length; i++) {
-      boolean active = i == selected;
-      int color = active ? u.accent : u.ink;
-      tabs[i].setSelected(active);
-      labels[i].setTextColor(color);
-      icons[i].setColor(color);
+      tabs[i].setPressed(false);
+      tabs[i].setSelected(i == selected);
     }
     if (animator != null) animator.cancel();
-    if (!isLaidOut() || !isShown() || !ValueAnimator.areAnimatorsEnabled()) {
-      indicator = selected;
-      stretch = 0;
-      invalidate();
+    if (indicator == selected || !isLaidOut() || !isShown() || !ValueAnimator.areAnimatorsEnabled()) {
+      showIndicator(selected, 0);
       return;
     }
-    animator = ValueAnimator.ofFloat(indicator, selected);
-    animator.setDuration(320);
-    animator.setInterpolator(new PathInterpolator(.25f, .75f, .3f, 1f));
+    float startPosition = indicator;
     float startStretch = stretch;
-    float peakStretch = u.d(9);
+    float peakStretch = u.d(4);
+    showIndicator(startPosition, startStretch);
+    animator = ValueAnimator.ofFloat(startPosition, selected);
+    animator.setDuration(190);
+    animator.setInterpolator(new PathInterpolator(.25f, .75f, .3f, 1f));
     animator.addUpdateListener(value -> {
-      indicator = (float) value.getAnimatedValue();
       float progress = value.getAnimatedFraction();
-      stretch = (startStretch + 4 * peakStretch * progress) * (1 - progress);
-      invalidate();
+      float stretchAmount = Math.min(peakStretch, (startStretch + 4 * peakStretch * progress) * (1 - progress));
+      showIndicator((float) value.getAnimatedValue(), stretchAmount);
     });
     animator.start();
   }
 
+  private void showIndicator(float position, float stretchAmount) {
+    indicator = position;
+    stretch = stretchAmount;
+    // A destination only gets the accent once the moving capsule reaches it.
+    int accent = position == selected ? selected : -1;
+    if (accent != accentedTab) {
+      for (int i = 0; i < tabs.length; i++) {
+        int color = i == accent ? u.accent : u.ink;
+        labels[i].setTextColor(color);
+        icons[i].setColor(color);
+      }
+      accentedTab = accent;
+    }
+    invalidate();
+  }
+
   @Override protected void onDetachedFromWindow() {
     if (animator != null) animator.cancel();
-    indicator = selected;
-    stretch = 0;
+    showIndicator(selected, 0);
     super.onDetachedFromWindow();
   }
 
@@ -263,6 +284,10 @@ final class GlassNavigation extends LinearLayout {
     void resize(int width, int height) {
       layer.setPosition(-bleed, -bleed, width + bleed, height + bleed);
       layer.setRenderEffect(Build.VERSION.SDK_INT >= 33 && lens != null ? lens.effect(width, height) : blur);
+    }
+
+    void discard() {
+      layer.discardDisplayList();
     }
 
     void draw(Canvas canvas, View source, int left, int top, boolean dirty) {
