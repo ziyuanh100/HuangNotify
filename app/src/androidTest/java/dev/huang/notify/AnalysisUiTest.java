@@ -1,14 +1,16 @@
 package dev.huang.notify;
 
 import android.app.Activity;
+import android.app.DatePickerDialog;
 import android.app.Instrumentation;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.test.ActivityInstrumentationTestCase2;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.EditText;
 import android.widget.ListView;
 import android.widget.TextView;
 import java.io.FileInputStream;
@@ -46,6 +48,8 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
       save(store, "today", BETA, "乙 App", today, 2);
       save(store, "last-week", ALPHA, "甲 App", today.minusDays(8), 1);
       save(store, "older", BETA, "乙 App", today.minusDays(55), 1);
+      save(store, "third", "analysis.fixture.gamma", "丙 App", today.minusDays(2), 1);
+      save(store, "fourth", "analysis.fixture.delta", "丁 App", today.minusDays(3), 1);
     }).get(10, TimeUnit.SECONDS);
   }
 
@@ -68,29 +72,58 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     openDashboard();
     awaitText(dashboard, today.minusDays(6) + " ～ " + today);
     awaitText(dashboard, yesterday + " · 84 則");
+    awaitText(dashboard, "84 則 · 95.5%");
+    View more = awaitText(dashboard, "查看其餘 1 個 App");
     capture("analysis-overview.png");
+    click(more);
+    awaitText(dashboard, "丙 App");
+    capture("analysis-app-ranking.png");
+    scrollAnalysis(0);
     click(awaitText(dashboard, "今天"));
     awaitText(dashboard, today + " · 2 則");
-    click(awaitText(dashboard, "近 7 天"));
-    awaitText(dashboard, yesterday + " · 84 則");
-    showRanking();
-    awaitText(dashboard, "84 則 · 97.7%");
-    capture("analysis-app-ranking.png");
+    click(awaitText(dashboard, "近 30 天"));
+    awaitText(dashboard, today.minusDays(29) + " ～ " + today);
+    assertFullChart("analysis_daily_chart", 30);
+    assertFullChart("analysis_hourly_chart", 24);
+    click(await(dashboard, v -> "00:00–00:59，0 則".equals(v.getContentDescription()), "midnight bar"));
+    awaitText(dashboard, "00:00–00:59 · 0 則");
+    awaitText(dashboard, "通知最多 09:00–09:59");
+    scrollAnalysis(430);
+    capture("analysis-charts.png");
+    scrollAnalysis(0);
     click(await(dashboard, v -> "查看 甲 App 的趨勢".equals(v.getContentDescription()), "App trend"));
     awaitText(dashboard, "甲 App · 顯示全部 App");
-    dashboard = startDashboard(dashboard::recreate);
+    dashboard = startDashboard(() -> getInstrumentation().runOnMainSync(dashboard::recreate));
     awaitText(dashboard, "甲 App · 顯示全部 App");
-    click(await(dashboard, v -> yesterday.toString().equals(v.getTag()), "yesterday bar"));
+    View day = await(dashboard, v -> (yesterday + "，84 則").equals(v.getContentDescription()), "yesterday bar");
+    click(day);
+    assertTrue(day.isSelected());
+    click(await(dashboard, v -> "analysis_daily_records".equals(v.getTag()), "view selected date"));
     awaitText(main, yesterday + " ～ " + yesterday);
     awaitText(main, "84 則");
 
-    openDashboard();
-    awaitText(dashboard, yesterday + " · 84 則");
-    showRanking();
+    dashboard = startDashboard(() -> getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK));
+    awaitText(dashboard, today.minusDays(29) + " ～ " + today);
+    awaitText(dashboard, "甲 App · 顯示全部 App");
+    View restored = await(dashboard, v -> (yesterday + "，84 則").equals(v.getContentDescription()), "restored date");
+    assertTrue(restored.isSelected());
+    click(awaitText(dashboard, "今天"));
+    awaitText(dashboard, "這段期間沒有已保存的通知");
+    assertNull(dashboard.getWindow().getDecorView().findViewWithTag("analysis_daily_chart"));
+    click(awaitText(dashboard, "查看近 30 天"));
+    awaitText(dashboard, "甲 App · 顯示全部 App");
+    click(awaitText(dashboard, "甲 App · 顯示全部 App"));
+    awaitText(dashboard, "App 排行");
+    int scrollBeforeDrill = scrollAnalysis(96);
+    assertTrue("The ranking should be scrollable", scrollBeforeDrill < 0);
     click(await(dashboard, v -> ALPHA.equals(v.getTag()), "App records"));
-    awaitText(main, today.minusDays(6) + " ～ " + today);
-    awaitText(main, "84 則");
+    awaitText(main, today.minusDays(29) + " ～ " + today);
+    awaitText(main, "85 則");
     awaitText(main, "甲 App ▾");
+    View back = awaitText(main, "返回通知分析");
+    dashboard = startDashboard(() -> click(back));
+    awaitText(dashboard, "App 排行");
+    assertEquals(scrollBeforeDrill, scrollAnalysis(null));
   }
 
   public void testCustomRangeAndEarlierChartPage() throws Exception {
@@ -101,28 +134,47 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     click(awaitText(dashboard, "自訂日期"));
     AppDialog dialog = activeDialog(dashboard);
     View dialogView = dialog.getWindow().getDecorView();
-    EditText start = (EditText) find(dialogView, v -> v instanceof EditText
-        && "開始日期 YYYY-MM-DD".contentEquals(((EditText) v).getHint()));
-    EditText end = (EditText) find(dialogView, v -> v instanceof EditText
-        && "結束日期 YYYY-MM-DD".contentEquals(((EditText) v).getHint()));
-    assertNotNull(start);
-    assertNotNull(end);
     LocalDate first = today.minusDays(60), last = today.minusDays(15);
-    getInstrumentation().runOnMainSync(() -> {
-      start.setText(first.toString());
-      end.setText(first.minusDays(1).toString());
-      dialog.getButton(AppDialog.BUTTON_POSITIVE).performClick();
-      assertNotNull(end.getError());
-      end.setText(last.toString());
-      dialog.getButton(AppDialog.BUTTON_POSITIVE).performClick();
-    });
+    chooseDate(dialogView.findViewWithTag("analysis_start_date"), first, RecordFilters.MIN_DATE);
+    chooseDate(dialogView.findViewWithTag("analysis_end_date"), last, first);
+    assertNotNull(find(dialogView, v -> v instanceof TextView && "共 46 天".contentEquals(((TextView) v).getText())));
+    click(dialog.getButton(AppDialog.BUTTON_POSITIVE));
     awaitText(dashboard, first + " ～ " + last);
     LocalDate older = today.minusDays(55);
     awaitText(dashboard, older + " · 1 則");
     click(awaitText(dashboard, "前一段"));
-    click(await(dashboard, v -> older.toString().equals(v.getTag()), "earlier date bar"));
+    click(await(dashboard, v -> (older + "，1 則").equals(v.getContentDescription()), "earlier date bar"));
+    click(await(dashboard, v -> "analysis_daily_records".equals(v.getTag()), "view earlier date"));
     awaitText(main, older + " ～ " + older);
     awaitText(main, "1 則");
+  }
+
+  private void chooseDate(View button, LocalDate date, LocalDate minimum) throws Exception {
+    assertNotNull(button);
+    click(button);
+    Field field = AnalysisActivity.class.getDeclaredField("datePicker");
+    field.setAccessible(true);
+    DatePickerDialog picker = (DatePickerDialog) field.get(dashboard);
+    assertNotNull(picker);
+    getInstrumentation().runOnMainSync(() -> {
+      assertEquals(minimum.atStartOfDay(zone).toInstant().toEpochMilli(), picker.getDatePicker().getMinDate());
+      picker.updateDate(date.getYear(), date.getMonthValue() - 1, date.getDayOfMonth());
+      assertTrue(picker.getButton(DialogInterface.BUTTON_POSITIVE).performClick());
+    });
+    getInstrumentation().waitForIdleSync();
+    assertEquals(date.toString(), ((TextView) button).getText().toString());
+  }
+
+  private void assertFullChart(String tag, int count) throws Exception {
+    ViewGroup chart = (ViewGroup) await(dashboard, v -> tag.equals(v.getTag()) && v.getWidth() > 0, tag);
+    getInstrumentation().runOnMainSync(() -> {
+      ViewGroup plot = (ViewGroup) chart.getChildAt(0);
+      assertEquals(count, plot.getChildCount());
+      assertTrue(plot.getWidth() > 0);
+      assertEquals(0, plot.getChildAt(0).getLeft());
+      assertEquals(plot.getWidth(), plot.getChildAt(count - 1).getRight());
+      for (int i = 0; i < count; i++) assertTrue(plot.getChildAt(i).getWidth() > 0);
+    });
   }
 
   private void save(Store store, String key, String pkg, String name, LocalDate day, int count) {
@@ -136,7 +188,7 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
 
   private void openDashboard() throws Exception {
     View entry = awaitText(main, "通知分析");
-    dashboard = startDashboard(entry::performClick);
+    dashboard = startDashboard(() -> click(entry));
   }
 
   private AnalysisActivity startDashboard(Runnable action) {
@@ -144,7 +196,7 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     Instrumentation.ActivityMonitor monitor =
         instrumentation.addMonitor(AnalysisActivity.class.getName(), null, false);
     try {
-      instrumentation.runOnMainSync(action);
+      action.run();
       AnalysisActivity next =
           (AnalysisActivity) instrumentation.waitForMonitorWithTimeout(monitor, 10000);
       assertNotNull(next);
@@ -154,9 +206,13 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     }
   }
 
-  private void showRanking() throws Exception {
+  private int scrollAnalysis(Integer pixels) throws Exception {
     ListView list = (ListView) await(dashboard, v -> "analysis_list".equals(v.getTag()), "dashboard");
-    getInstrumentation().runOnMainSync(() -> list.setSelectionFromTop(list.getHeaderViewsCount(), 0));
+    if (pixels != null) getInstrumentation().runOnMainSync(() -> list.setSelectionFromTop(0, -pixels));
+    getInstrumentation().waitForIdleSync();
+    AtomicReference<Integer> offset = new AtomicReference<>();
+    getInstrumentation().runOnMainSync(() -> offset.set(list.getChildAt(0).getTop()));
+    return offset.get();
   }
 
   private void click(View view) {
