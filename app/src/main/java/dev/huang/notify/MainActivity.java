@@ -34,6 +34,7 @@ import org.json.JSONObject;
 /** Native, dependency-light Android UI. Database and encryption never run on the UI thread. */
 public final class MainActivity extends Activity {
   private static final int PAGE_SIZE = 80;
+  private static final int ANALYSIS_REQUEST = 105;
   private Ui u;
   private final List<RecordSwitch> recordSwitches = new ArrayList<>();
   private final List<TextView> recordStates = new ArrayList<>();
@@ -442,6 +443,14 @@ public final class MainActivity extends Activity {
   }
 
   private void buildResultsHeader(LinearLayout header, boolean favorites) {
+    if (!favorites) {
+      TextView analysis = u.button("通知分析", false);
+      analysis.setOnClickListener(v -> {
+        hideKeyboard();
+        startActivityForResult(new Intent(this, AnalysisActivity.class), ANALYSIS_REQUEST);
+      });
+      header.addView(analysis);
+    }
     LinearLayout section = u.row();
     section.setPadding(u.d(2), u.d(6), u.d(2), u.d(5));
     sectionTitle = u.text("", 19, u.ink, true);
@@ -751,9 +760,10 @@ public final class MainActivity extends Activity {
     int gen = generation;
     String q = query, pkg = filterPkg;
     boolean settings = page.equals("settings"), favorites = page.equals("favorites"), images = onlyImages;
-    String today = LocalDate.now().toString();
+    ZoneId zone = ZoneId.systemDefault();
+    String today = LocalDate.now(zone).toString();
     long[] bounds = RecordFilters.bounds(onlyToday ? today : rangeStart,
-        onlyToday ? today : rangeEnd, ZoneId.systemDefault());
+        onlyToday ? today : rangeEnd, zone);
     int amount = limit;
     Store.IO.execute(() -> {
       try {
@@ -762,6 +772,9 @@ public final class MainActivity extends Activity {
         List<String[]> sources = store.apps();
         List<Record> records = settings ? Collections.emptyList()
             : store.listFiltered(q, pkg, favorites, bounds[0], bounds[1], images, amount + 1);
+        long exactCount = records.size() > amount && !favorites && !images
+            && q.trim().isEmpty() && bounds[1] != -1
+            ? store.countInScope(pkg, bounds[0], bounds[1]) : -1;
         String savedPaused = store.setting("paused", "0");
         String savedRetention = store.setting("retention", "0");
         String savedTime = store.setting("last_saved", "0");
@@ -781,7 +794,7 @@ public final class MainActivity extends Activity {
           } else if (settings) {
             storageSummary.setText(format(counts[0]) + " 則通知 · " + size);
           } else {
-            showResults(records, amount, gen);
+            showResults(records, amount, gen, exactCount);
           }
         });
       } catch (Exception e) {
@@ -801,7 +814,7 @@ public final class MainActivity extends Activity {
     });
   }
 
-  private void showResults(List<Record> records, int amount, int gen) {
+  private void showResults(List<Record> records, int amount, int gen, long exactCount) {
     boolean more = records.size() > amount;
     if (more) records.remove(records.size() - 1);
     rows.clear();
@@ -820,7 +833,8 @@ public final class MainActivity extends Activity {
         showEmpty("還沒有通知紀錄", "收到並保存通知後，就會顯示在這裡。", null, null);
       }
     }
-    resultCount.setText(format(rows.size()) + (more ? "+" : "") + " 則");
+    resultCount.setText(exactCount >= 0 ? format(exactCount) + " 則"
+        : format(rows.size()) + (more ? "+" : "") + " 則");
     adapter.notifyDataSetChanged();
   }
 
@@ -1414,6 +1428,25 @@ public final class MainActivity extends Activity {
   private void chooseImport() {backupScreen.chooseImport();}
   @Override protected void onActivityResult(int request,int result,Intent data) {
     super.onActivityResult(request,result,data);
+    if (request == ANALYSIS_REQUEST) {
+      if (result == RESULT_OK && data != null) {
+        rangeStart = data.getStringExtra(AnalysisActivity.FIRST_DATE);
+        rangeEnd = data.getStringExtra(AnalysisActivity.LAST_DATE);
+        filterPkg = data.getStringExtra(AnalysisActivity.PACKAGE);
+        filterName = filterPkg == null ? "全部 App" : data.getStringExtra(AnalysisActivity.APP_NAME);
+        onlyToday = onlyImages = false;
+        query = "";
+        if (page.equals("records")) {
+          searchInput.setText("");
+          rows.clear();
+          adapter.notifyDataSetChanged();
+          filtersChanged();
+        } else {
+          openPage("records");
+        }
+      }
+      return;
+    }
     if(backupScreen.onResult(request,result,data))return;
     if(result!=RESULT_OK||data==null||data.getData()==null)return;
     Uri uri=data.getData();
