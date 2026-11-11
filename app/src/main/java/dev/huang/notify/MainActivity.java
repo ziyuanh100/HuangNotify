@@ -24,6 +24,8 @@ import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.*;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import java.text.SimpleDateFormat;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -69,6 +71,8 @@ public final class MainActivity extends Activity {
   private long[] counts = {0, 0, 0};
   private boolean onlyToday, refreshing, resumed, onlyImages, searchPending, keyboardVisible;
   private String rangeStart="",rangeEnd="";
+  private Bundle analysisReturn, filtersBeforeAnalysis;
+  private OnBackInvokedCallback analysisBack;
   private int limit = PAGE_SIZE, generation, displayedGeneration = -1;
   BackupScreen backupScreen;
   private final Runnable poll =
@@ -95,11 +99,9 @@ public final class MainActivity extends Activity {
     updateFlow=new UpdateFlow(this);
     if (state != null) {
       page = state.getString("page", "records");
-      query = state.getString("query", "");
-      filterPkg = state.getString("pkg");
-      filterName = state.getString("filter", "全部 App");
-      onlyToday = state.getBoolean("today");
-      onlyImages=state.getBoolean("images");rangeStart=state.getString("range_start","");rangeEnd=state.getString("range_end","");
+      restoreRecordFilters(state);
+      analysisReturn = state.getBundle("analysis_return");
+      filtersBeforeAnalysis = state.getBundle("filters_before_analysis");
       settingsScrollY = state.getInt("settings_scroll");
     }
     getWindow().setStatusBarColor(u.bg);
@@ -136,7 +138,11 @@ public final class MainActivity extends Activity {
         });
     if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
     setContentView(root);
-    if (getIntent().getBooleanExtra("open_updates",false)) page="settings";
+    if (getIntent().getBooleanExtra("open_updates",false)) {
+      page="settings";
+      endAnalysisDrill();
+    }
+    updateAnalysisBack();
     UpgradeManager.reconcile(this);
     UpgradeManager.recover(this);
     AutoBackup.schedule(this);
@@ -189,6 +195,9 @@ public final class MainActivity extends Activity {
 
   @Override
   protected void onDestroy() {
+    if (Build.VERSION.SDK_INT >= 33 && analysisBack != null) {
+      getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(analysisBack);
+    }
     updateFlow.destroy();
     handler.removeCallbacksAndMessages(null);
     AppDialog.dismissAll(this);
@@ -200,22 +209,79 @@ public final class MainActivity extends Activity {
   protected void onSaveInstanceState(Bundle b) {
     super.onSaveInstanceState(b);
     b.putString("page", page);
+    saveRecordFilters(b);
+    b.putBundle("analysis_return", analysisReturn);
+    b.putBundle("filters_before_analysis", filtersBeforeAnalysis);
+    b.putInt("settings_scroll", settingsScroll == null ? settingsScrollY : settingsScroll.getScrollY());
+  }
+
+  private void saveRecordFilters(Bundle b) {
     b.putString("query", query);
     b.putString("pkg", filterPkg);
     b.putString("filter", filterName);
     b.putBoolean("today", onlyToday);
-    b.putBoolean("images",onlyImages);b.putString("range_start",rangeStart);b.putString("range_end",rangeEnd);
-    b.putInt("settings_scroll", settingsScroll == null ? settingsScrollY : settingsScroll.getScrollY());
+    b.putBoolean("images", onlyImages);
+    b.putString("range_start", rangeStart);
+    b.putString("range_end", rangeEnd);
+  }
+
+  private void restoreRecordFilters(Bundle b) {
+    query = b.getString("query", "");
+    filterPkg = b.getString("pkg");
+    filterName = b.getString("filter", "全部 App");
+    onlyToday = b.getBoolean("today");
+    onlyImages = b.getBoolean("images");
+    rangeStart = b.getString("range_start", "");
+    rangeEnd = b.getString("range_end", "");
+  }
+
+  private void updateAnalysisBack() {
+    if (Build.VERSION.SDK_INT < 33) return;
+    if (analysisReturn != null && analysisBack == null) {
+      analysisBack = this::launchAnalysis;
+      getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+          OnBackInvokedDispatcher.PRIORITY_DEFAULT, analysisBack);
+    } else if (analysisReturn == null && analysisBack != null) {
+      getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(analysisBack);
+      analysisBack = null;
+    }
+  }
+
+  @Override public void onBackPressed() {
+    if (analysisReturn != null) launchAnalysis();
+    else super.onBackPressed();
+  }
+
+  private void endAnalysisDrill() {
+    if (filtersBeforeAnalysis != null) restoreRecordFilters(filtersBeforeAnalysis);
+    analysisReturn = filtersBeforeAnalysis = null;
+    updateAnalysisBack();
+  }
+
+  private void launchAnalysis() {
+    hideKeyboard();
+    Intent intent = new Intent(this, AnalysisActivity.class);
+    if (analysisReturn != null) {
+      intent.putExtra(AnalysisActivity.DASHBOARD_STATE, analysisReturn);
+      endAnalysisDrill();
+      rebuildPage();
+    }
+    startActivityForResult(intent, ANALYSIS_REQUEST);
   }
 
   private void openPage(String nextPage) {
     if (page.equals(nextPage)) return;
     hideKeyboard();
+    endAnalysisDrill();
+    page = nextPage;
+    rebuildPage();
+  }
+
+  private void rebuildPage() {
     handler.removeCallbacks(searchRefresh);
     searchPending = false;
     limit = PAGE_SIZE;
     generation++;
-    page = nextPage;
     build();
     refresh();
   }
@@ -298,6 +364,13 @@ public final class MainActivity extends Activity {
     boolean favorites = page.equals("favorites");
     LinearLayout chrome = u.column();
     pageTitle(chrome, favorites ? "收藏通知" : "通知紀錄", favorites ? "star" : "bell");
+    if (analysisReturn != null) {
+      TextView back = u.button("返回通知分析", false);
+      back.setOnClickListener(v -> launchAnalysis());
+      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+      params.setMargins(pageInset(), 0, pageInset(), u.d(8));
+      chrome.addView(back, params);
+    }
     buildSearch(chrome);
 
     list = new ListView(this);
@@ -443,12 +516,9 @@ public final class MainActivity extends Activity {
   }
 
   private void buildResultsHeader(LinearLayout header, boolean favorites) {
-    if (!favorites) {
+    if (!favorites && analysisReturn == null) {
       TextView analysis = u.button("通知分析", false);
-      analysis.setOnClickListener(v -> {
-        hideKeyboard();
-        startActivityForResult(new Intent(this, AnalysisActivity.class), ANALYSIS_REQUEST);
-      });
+      analysis.setOnClickListener(v -> launchAnalysis());
       header.addView(analysis);
     }
     LinearLayout section = u.row();
@@ -1430,20 +1500,20 @@ public final class MainActivity extends Activity {
     super.onActivityResult(request,result,data);
     if (request == ANALYSIS_REQUEST) {
       if (result == RESULT_OK && data != null) {
+        analysisReturn = data.getBundleExtra(AnalysisActivity.DASHBOARD_STATE);
+        if (analysisReturn != null) {
+          filtersBeforeAnalysis = new Bundle();
+          saveRecordFilters(filtersBeforeAnalysis);
+        }
         rangeStart = data.getStringExtra(AnalysisActivity.FIRST_DATE);
         rangeEnd = data.getStringExtra(AnalysisActivity.LAST_DATE);
         filterPkg = data.getStringExtra(AnalysisActivity.PACKAGE);
         filterName = filterPkg == null ? "全部 App" : data.getStringExtra(AnalysisActivity.APP_NAME);
         onlyToday = onlyImages = false;
         query = "";
-        if (page.equals("records")) {
-          searchInput.setText("");
-          rows.clear();
-          adapter.notifyDataSetChanged();
-          filtersChanged();
-        } else {
-          openPage("records");
-        }
+        page = "records";
+        updateAnalysisBack();
+        rebuildPage();
       }
       return;
     }
