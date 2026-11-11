@@ -22,6 +22,7 @@
             <intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>
         </service>
         <activity android:name=".ImageViewerActivity" android:exported="false"/>
+        <activity android:name=".AnalysisActivity" android:exported="false"/>
         <activity android:name=".InstallConsentActivity" android:exported="false"/>
         <receiver android:name=".UpdateCompletion" android:exported="false">
             <intent-filter><action android:name="android.intent.action.MY_PACKAGE_REPLACED"/></intent-filter>

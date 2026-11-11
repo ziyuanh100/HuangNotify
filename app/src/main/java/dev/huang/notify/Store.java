@@ -5,6 +5,9 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
+import android.os.CancellationSignal;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
@@ -241,9 +244,27 @@ public final class Store extends SQLiteOpenHelper {
   public List<Record> list(String query, String pkg, boolean favorite, boolean today, int limit) {
     return listFiltered(query,pkg,favorite,today?todayStart():-1,-1,false,limit);
   }
+
+  private static String recordScope(String pkg, long start, long end, List<String> args) {
+    String where = "1=1";
+    if (pkg != null) {
+      where += " AND pkg=?";
+      args.add(pkg);
+    }
+    if (start != -1) {
+      where += " AND first_seen>=?";
+      args.add(Long.toString(start));
+    }
+    if (end != -1) {
+      where += " AND first_seen<?";
+      args.add(Long.toString(end));
+    }
+    return where;
+  }
+
   List<Record> listFiltered(String query,String pkg,boolean favorite,long start,long end,boolean images,int limit) {
     List<String> args = new ArrayList<>();
-    String where = "1=1";
+    String where = recordScope(pkg, start, end, args);
     if (!query.trim().isEmpty()) {
       where +=
           " AND (title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' OR app LIKE ? ESCAPE '\\' OR"
@@ -251,13 +272,7 @@ public final class Store extends SQLiteOpenHelper {
       String term = EventPolicy.likePattern(query);
       for (int i = 0; i < 4; i++) args.add(term);
     }
-    if (pkg != null) {
-      where += " AND pkg=?";
-      args.add(pkg);
-    }
     if (favorite) where += " AND favorite=1";
-    if(start>=0){where+=" AND first_seen>=?";args.add(Long.toString(start));}
-    if(end>=0){where+=" AND first_seen<?";args.add(Long.toString(end));}
     if(images)where+=" AND (EXISTS(SELECT 1 FROM record_images i WHERE i.record_id=r.id) OR EXISTS(SELECT 1 FROM versions v JOIN version_images i ON i.version_id=v.id WHERE v.record_id=r.id))";
     List<Record> result = new ArrayList<>();
     try (Cursor c =
@@ -272,6 +287,34 @@ public final class Store extends SQLiteOpenHelper {
       while (c.moveToNext()) result.add(record(c));
     }
     return result;
+  }
+
+  long countInScope(String pkg, long start, long end) {
+    List<String> args = new ArrayList<>();
+    String where = recordScope(pkg, start, end, args);
+    try (Cursor c = getReadableDatabase().rawQuery(
+        "SELECT COUNT(*) FROM records WHERE " + where, args.toArray(new String[0]))) {
+      c.moveToFirst();
+      return c.getLong(0);
+    }
+  }
+
+  NotificationAnalysis analyze(LocalDate first, LocalDate last, ZoneId zone, String pkg,
+      CancellationSignal signal) {
+    signal.throwIfCanceled();
+    long[] bounds = RecordFilters.bounds(first.toString(), last.toString(), zone);
+    List<String> args = new ArrayList<>();
+    String where = recordScope(pkg, bounds[0], bounds[1], args);
+    NotificationAnalysis analysis = new NotificationAnalysis(first, last, zone);
+    try (Cursor c = getReadableDatabase().rawQuery(
+        "SELECT first_seen,pkg,app FROM records WHERE " + where + " ORDER BY first_seen",
+        args.toArray(new String[0]), signal)) {
+      while (c.moveToNext()) {
+        signal.throwIfCanceled();
+        analysis.add(c.getLong(0), c.getString(1), c.getString(2));
+      }
+    }
+    return analysis;
   }
 
   private Record record(Cursor c) {
