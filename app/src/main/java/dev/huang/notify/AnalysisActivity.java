@@ -472,7 +472,7 @@ public final class AnalysisActivity extends Activity {
       card.setBackground(u.outline(u.surface, 16));
       addView(card, new LinearLayout.LayoutParams(-1, -2));
       details = u.row();
-      details.setMinHeight(u.d(48));
+      details.setMinimumHeight(u.d(48));
       details.setPadding(u.d(6), u.d(5), u.d(6), u.d(5));
       details.setFocusable(true);
       u.ripple(details, u.surface, 12);
