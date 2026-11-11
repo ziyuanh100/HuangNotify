@@ -159,8 +159,10 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     getInstrumentation().runOnMainSync(() -> {
       assertEquals(minimum.atStartOfDay(zone).toInstant().toEpochMilli(), picker.getDatePicker().getMinDate());
       picker.updateDate(date.getYear(), date.getMonthValue() - 1, date.getDayOfMonth());
-      picker.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
+      assertTrue(picker.getButton(DialogInterface.BUTTON_POSITIVE).performClick());
     });
+    getInstrumentation().waitForIdleSync();
+    assertEquals(date.toString(), ((TextView) button).getText().toString());
   }
 
   private void assertFullChart(String tag, int count) throws Exception {
