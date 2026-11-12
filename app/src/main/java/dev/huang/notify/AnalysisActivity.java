@@ -1,7 +1,6 @@
 package dev.huang.notify;
 
 import android.app.Activity;
-import android.app.DatePickerDialog;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -10,11 +9,13 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.OperationCanceledException;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.widget.BaseAdapter;
+import android.widget.DatePicker;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -27,7 +28,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
-import java.util.function.Consumer;
+import java.util.Objects;
 import java.util.function.IntConsumer;
 
 /** Local dashboard with links back to the records that make up each count. */
@@ -44,15 +45,13 @@ public final class AnalysisActivity extends Activity {
   private final NumberFormat integers = NumberFormat.getIntegerInstance(Locale.TAIWAN);
   private final NumberFormat averages = NumberFormat.getNumberInstance(Locale.TAIWAN);
   private final NumberFormat percentages = NumberFormat.getPercentInstance(Locale.TAIWAN);
-  private final TextView[] periods = new TextView[PERIODS.length];
   private Ui u;
   private ListView list;
-  private TextView range, scope;
+  private TextView periodButton, range, scope;
   private LinearLayout body;
   private RankAdapter ranking;
   private NotificationAnalysis analysis;
   private CancellationSignal loading;
-  private DatePickerDialog datePicker;
   private int period = WEEK;
   private int scrollPosition, scrollTop, selectedHour = -1;
   private String customFirst = "", customLast = "", pkg, appName;
@@ -107,6 +106,7 @@ public final class AnalysisActivity extends Activity {
     u.heading(title);
     top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
     root.addView(top);
+    buildPeriodControls(root);
 
     list = new ListView(this);
     list.setTag("analysis_list");
@@ -115,7 +115,6 @@ public final class AnalysisActivity extends Activity {
     list.setItemsCanFocus(true);
     LinearLayout header = u.column();
     header.setPadding(u.d(16), u.d(4), u.d(16), u.d(12));
-    buildPeriodControls(header);
     body = u.column();
     header.addView(body);
     list.addHeaderView(header, null, true);
@@ -137,7 +136,6 @@ public final class AnalysisActivity extends Activity {
   }
 
   @Override protected void onDestroy() {
-    if (datePicker != null) datePicker.dismiss();
     AppDialog.dismissAll(this);
     super.onDestroy();
   }
@@ -167,34 +165,34 @@ public final class AnalysisActivity extends Activity {
     scrollTop = list.getChildAt(0).getTop();
   }
 
-  private void buildPeriodControls(LinearLayout header) {
-    int columns = getResources().getConfiguration().fontScale >= 1.5f
-        || getResources().getConfiguration().screenWidthDp < 320 ? 2 : 4;
-    for (int offset = 0; offset < periods.length; offset += columns) {
-      LinearLayout row = u.row();
-      for (int i = offset; i < offset + columns; i++) {
-        int choice = i;
-        TextView button = u.button(PERIODS[i], false);
-        button.setPadding(u.d(4), u.d(8), u.d(4), u.d(8));
-        button.setOnClickListener(v -> {
+  private void buildPeriodControls(LinearLayout root) {
+    LinearLayout controls = u.column();
+    controls.setPadding(u.d(16), 0, u.d(16), u.d(8));
+    LinearLayout row = u.row();
+    periodButton = u.button("", false);
+    periodButton.setOnClickListener(v -> choosePeriod());
+    scope = u.button("", false);
+    scope.setOnClickListener(v -> new AnalysisAppPicker(this, u, pkg, this::selectApp).show());
+    for (TextView button : new TextView[]{periodButton, scope}) {
+      button.setMaxLines(2);
+      button.setEllipsize(TextUtils.TruncateAt.END);
+      button.setPadding(u.d(10), u.d(7), u.d(10), u.d(7));
+      addColumn(row, button);
+    }
+    controls.addView(row);
+    u.gap(controls, 6);
+    range = u.text("", 13, u.muted, true);
+    controls.addView(range);
+    root.addView(controls);
+  }
+
+  private void choosePeriod() {
+    new AppDialog.Builder(this).setTitle("日期範圍")
+        .setSingleChoiceItems(PERIODS, period, (dialog, choice) -> {
+          dialog.dismiss();
           if (choice == CUSTOM) chooseDates();
           else if (period != choice) selectPeriod(choice);
-        });
-        periods[i] = button;
-        addColumn(row, button);
-      }
-      header.addView(row);
-      u.gap(header, 6);
-    }
-    range = u.text("", 13, u.muted, true);
-    header.addView(range);
-    scope = u.button("", false);
-    scope.setOnClickListener(v -> {
-      pkg = appName = null;
-      loadAnalysis(false);
-    });
-    header.addView(scope);
-    u.gap(header, 10);
+        }).setNegativeButton("取消", null).show();
   }
 
   private void chooseDates() {
@@ -204,30 +202,54 @@ public final class AnalysisActivity extends Activity {
     TextView start = u.button("", false), end = u.button("", false);
     start.setTag("analysis_start_date");
     end.setTag("analysis_end_date");
+    int[] edge = {0};
+    boolean[] switching = {false};
+    ZoneId zone = ZoneId.systemDefault();
+    DatePicker calendar = new DatePicker(this);
+    calendar.setTag("analysis_calendar");
+    calendar.setMinDate(RecordFilters.MIN_DATE.atStartOfDay(zone).toInstant().toEpochMilli());
+    calendar.setMaxDate(RecordFilters.MAX_DATE.atStartOfDay(zone).toInstant().toEpochMilli());
     TextView span = u.text("", 14, u.muted, true);
     Runnable update = () -> {
-      start.setText(dates[0].toString());
+      start.setText("開始日期\n" + dates[0]);
       start.setContentDescription("選擇開始日期，" + dates[0]);
-      end.setText(dates[1].toString());
+      end.setText("結束日期\n" + dates[1]);
       end.setContentDescription("選擇結束日期，" + dates[1]);
+      start.setSelected(edge[0] == 0);
+      end.setSelected(edge[0] == 1);
+      start.setTextColor(edge[0] == 0 ? u.onAccent : u.accent);
+      end.setTextColor(edge[0] == 1 ? u.onAccent : u.accent);
+      u.ripple(start, edge[0] == 0 ? u.accent : u.pale, 16);
+      u.ripple(end, edge[0] == 1 ? u.accent : u.pale, 16);
       span.setText("共 " + integers.format(ChronoUnit.DAYS.between(dates[0], dates[1]) + 1) + " 天");
     };
-    start.setOnClickListener(v -> pickDate(dates[0], RecordFilters.MIN_DATE, date -> {
-      dates[0] = date;
-      if (dates[1].isBefore(date)) dates[1] = date;
+    calendar.init(dates[0].getYear(), dates[0].getMonthValue() - 1, dates[0].getDayOfMonth(),
+        (view, year, month, day) -> {
+          if (switching[0]) return;
+          LocalDate date = LocalDate.of(year, month + 1, day);
+          dates[edge[0]] = date;
+          if (dates[1].isBefore(dates[0])) dates[1] = dates[0];
+          update.run();
+        });
+    IntConsumer activate = index -> {
+      edge[0] = index;
+      switching[0] = true;
+      LocalDate minimum = index == 0 ? RecordFilters.MIN_DATE : dates[0];
+      calendar.setMinDate(minimum.atStartOfDay(zone).toInstant().toEpochMilli());
+      LocalDate date = dates[index];
+      calendar.updateDate(date.getYear(), date.getMonthValue() - 1, date.getDayOfMonth());
+      switching[0] = false;
       update.run();
-    }));
-    end.setOnClickListener(v -> pickDate(dates[1], dates[0], date -> {
-      dates[1] = date;
-      update.run();
-    }));
-    fields.addView(u.text("開始日期", 13, u.muted, false));
-    fields.addView(start);
-    u.gap(fields, 8);
-    fields.addView(u.text("結束日期", 13, u.muted, false));
-    fields.addView(end);
-    u.gap(fields, 10);
+    };
+    start.setOnClickListener(v -> activate.accept(0));
+    end.setOnClickListener(v -> activate.accept(1));
+    LinearLayout edges = u.row();
+    addColumn(edges, start);
+    addColumn(edges, end);
+    fields.addView(edges);
+    u.gap(fields, 6);
     fields.addView(span);
+    fields.addView(calendar, new LinearLayout.LayoutParams(-1, -2));
     update.run();
     new AppDialog.Builder(this).setTitle("自訂日期").setView(fields).setNegativeButton("取消", null)
         .setPositiveButton("套用", (dialog, which) -> {
@@ -237,18 +259,11 @@ public final class AnalysisActivity extends Activity {
         }).show();
   }
 
-  private void pickDate(LocalDate initial, LocalDate minimum, Consumer<LocalDate> onPick) {
-    ZoneId zone = ZoneId.systemDefault();
-    DatePickerDialog picker = new DatePickerDialog(this,
-        (view, year, month, day) -> onPick.accept(LocalDate.of(year, month + 1, day)),
-        initial.getYear(), initial.getMonthValue() - 1, initial.getDayOfMonth());
-    picker.getDatePicker().setMinDate(minimum.atStartOfDay(zone).toInstant().toEpochMilli());
-    picker.getDatePicker().setMaxDate(RecordFilters.MAX_DATE.atStartOfDay(zone).toInstant().toEpochMilli());
-    datePicker = picker;
-    picker.setOnDismissListener(dialog -> {
-      if (datePicker == picker) datePicker = null;
-    });
-    picker.show();
+  private void selectApp(String packageName, String name) {
+    if (Objects.equals(pkg, packageName)) return;
+    pkg = packageName;
+    appName = name;
+    loadAnalysis(false);
   }
 
   private void selectPeriod(int choice) {
@@ -267,15 +282,15 @@ public final class AnalysisActivity extends Activity {
     first = period == CUSTOM ? LocalDate.parse(customFirst)
         : last.minusDays(period == MONTH ? 29 : period == WEEK ? 6 : 0);
     if (chartEnd == null || chartEnd.isBefore(first) || chartEnd.isAfter(last)) chartEnd = last;
-    for (int i = 0; i < periods.length; i++) {
-      boolean selected = i == period;
-      periods[i].setSelected(selected);
-      periods[i].setTextColor(selected ? u.onAccent : u.accent);
-      u.ripple(periods[i], selected ? u.accent : u.pale, 16);
-    }
+    periodButton.setText(PERIODS[period] + " ▾");
+    periodButton.setContentDescription("日期範圍，" + PERIODS[period]);
     range.setText(dateRange(first, last));
-    scope.setVisibility(pkg == null ? View.GONE : View.VISIBLE);
-    scope.setText(pkg == null ? "" : appName + " · 顯示全部 App");
+    String scopeName = pkg == null ? "全部 App" : appName;
+    scope.setText(scopeName + " ▾");
+    scope.setContentDescription("依 App 篩選，" + scopeName);
+    scope.setSelected(pkg != null);
+    scope.setTextColor(pkg == null ? u.accent : u.onAccent);
+    u.ripple(scope, pkg == null ? u.pale : u.accent, 16);
     analysis = null;
     ranking.setApps(Collections.emptyList());
     body.removeAllViews();
@@ -621,11 +636,7 @@ public final class AnalysisActivity extends Activity {
       records.setTag(app.pkg);
       records.setOnClickListener(v -> showRecords(first, last, app.pkg, app.name()));
       trend.setContentDescription("查看 " + app.name() + " 的趨勢");
-      trend.setOnClickListener(v -> {
-        pkg = app.pkg;
-        appName = app.name();
-        loadAnalysis(false);
-      });
+      trend.setOnClickListener(v -> selectApp(app.pkg, app.name()));
     }
   }
 }

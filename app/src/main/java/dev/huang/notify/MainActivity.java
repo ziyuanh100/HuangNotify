@@ -327,7 +327,7 @@ public final class MainActivity extends Activity {
 
   private void updateKeyboardVisibility(boolean visible) {
     keyboardVisible = visible;
-    if (nav != null) nav.setVisibility(visible ? View.GONE : View.VISIBLE);
+    if (nav != null) nav.setVisibility(visible || analysisReturn != null ? View.GONE : View.VISIBLE);
     updateContentInsets();
     updateOverviewVisibility();
   }
@@ -336,7 +336,7 @@ public final class MainActivity extends Activity {
     View scroll = settingsScroll != null ? settingsScroll : list;
     if (scroll == null || nav == null) return;
     FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) nav.getLayoutParams();
-    int bottom = keyboardVisible ? 0 : nav.getHeight() + params.bottomMargin + u.d(8);
+    int bottom = nav.getVisibility() == View.VISIBLE ? nav.getHeight() + params.bottomMargin + u.d(8) : 0;
     if (scroll.getPaddingBottom() != bottom) {
       scroll.setPadding(scroll.getPaddingLeft(), scroll.getPaddingTop(), scroll.getPaddingRight(), bottom);
     }
@@ -362,15 +362,11 @@ public final class MainActivity extends Activity {
 
   private void buildRecords() {
     boolean favorites = page.equals("favorites");
+    boolean analysisDetail = analysisReturn != null;
     LinearLayout chrome = u.column();
-    pageTitle(chrome, favorites ? "收藏通知" : "通知紀錄", favorites ? "star" : "bell");
-    if (analysisReturn != null) {
-      TextView back = u.button("返回通知分析", false);
-      back.setOnClickListener(v -> launchAnalysis());
-      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-      params.setMargins(pageInset(), 0, pageInset(), u.d(8));
-      chrome.addView(back, params);
-    }
+    pageTitle(chrome, analysisDetail ? "分析紀錄" : favorites ? "收藏通知" : "通知紀錄",
+        favorites ? "star" : "bell");
+    if (analysisDetail) buildAnalysisScope(chrome);
     buildSearch(chrome);
 
     list = new ListView(this);
@@ -392,7 +388,7 @@ public final class MainActivity extends Activity {
 
     LinearLayout header = u.column();
     header.setPadding(pageInset(), u.d(10), pageInset(), u.d(2));
-    if (!favorites) {
+    if (!favorites && !analysisDetail) {
       overview = u.column();
       overview.addView(recordingOverview());
       u.gap(overview, 14);
@@ -426,6 +422,25 @@ public final class MainActivity extends Activity {
     updateFilterControls();
   }
 
+  private void buildAnalysisScope(LinearLayout parent) {
+    boolean stack = getResources().getConfiguration().fontScale >= 1.5f
+        || getResources().getConfiguration().screenWidthDp < 330;
+    LinearLayout summary = stack ? u.column() : u.row();
+    summary.setPadding(pageInset(), 0, pageInset(), u.d(8));
+    LinearLayout labels = u.column();
+    labels.addView(u.text(filterName, 15, u.ink, true));
+    String dates = rangeStart.equals(rangeEnd) ? rangeStart : rangeStart + " ～ " + rangeEnd;
+    labels.addView(u.text(dates, 13, u.muted, false));
+    summary.addView(labels, stack ? new LinearLayout.LayoutParams(-1, -2)
+        : new LinearLayout.LayoutParams(0, -2, 1));
+    if (stack) u.gap(summary, 6);
+    TextView back = u.button("返回分析", false);
+    back.setContentDescription("返回通知分析");
+    back.setOnClickListener(v -> launchAnalysis());
+    summary.addView(back);
+    parent.addView(summary);
+  }
+
   private void buildSearch(LinearLayout parent) {
     LinearLayout search = u.row();
     search.setPaddingRelative(u.d(14), 0, u.d(4), 0);
@@ -438,7 +453,7 @@ public final class MainActivity extends Activity {
     searchInput.setTextSize(15);
     searchInput.setTextColor(u.ink);
     searchInput.setHintTextColor(u.muted);
-    searchInput.setHint("搜尋通知、App 或備註");
+    searchInput.setHint(analysisReturn == null ? "搜尋通知、App 或備註" : "搜尋這些通知");
     searchInput.setBackgroundColor(Color.TRANSPARENT);
     searchInput.setPaddingRelative(u.d(10), u.d(10), 0, u.d(10));
     searchInput.setMinHeight(u.d(52));
@@ -470,6 +485,11 @@ public final class MainActivity extends Activity {
       public void afterTextChanged(Editable e) {}
     });
 
+    if (analysisReturn != null) {
+      appFilter = timeFilter = imageFilter = filterRange = null;
+      filterSummary = null;
+      return;
+    }
     HorizontalScrollView filterStrip = new HorizontalScrollView(this);
     filterStrip.setHorizontalScrollBarEnabled(false);
     filterStrip.setPadding(pageInset(), u.d(7), pageInset(), u.d(2));
@@ -617,11 +637,15 @@ public final class MainActivity extends Activity {
 
   private void updateFilterControls() {
     if (list == null) return;
+    clearSearch.setVisibility(query.isEmpty() ? View.INVISIBLE : View.VISIBLE);
+    if (analysisReturn != null) {
+      sectionTitle.setText(query.trim().isEmpty() ? "通知清單" : "搜尋結果");
+      return;
+    }
     updateChip(appFilter, filterName + " ▾", filterPkg != null);
     updateChip(timeFilter, onlyToday ? "今天 ▾" : rangeStart.isEmpty() ? "所有日期 ▾" : "自訂日期 ▾",
         onlyToday || !rangeStart.isEmpty());
     updateChip(imageFilter, onlyImages ? "有圖片 ✓" : "只看有圖片", onlyImages);
-    clearSearch.setVisibility(query.isEmpty() ? View.INVISIBLE : View.VISIBLE);
     String title = page.equals("favorites") ? "已收藏通知" : "所有通知";
     if (hasFilterOptions()) title = "篩選結果";
     else if (!query.trim().isEmpty()) title = "搜尋結果";
@@ -893,7 +917,9 @@ public final class MainActivity extends Activity {
     loadMore.setVisibility(more ? View.VISIBLE : View.GONE);
     emptyCard.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
     if (rows.isEmpty()) {
-      if (hasFilters()) {
+      if (analysisReturn != null) {
+        showEmpty("找不到符合的通知", "可調整關鍵字，或返回分析切換範圍。", null, null);
+      } else if (hasFilters()) {
         showEmpty("找不到符合的通知", "試試其他關鍵字、App 或日期。", null, null);
       } else if (page.equals("favorites")) {
         showEmpty("還沒有收藏", "打開一則通知，點選「加入收藏」。", "查看通知紀錄", () -> openPage("records"));

@@ -1,16 +1,16 @@
 package dev.huang.notify;
 
 import android.app.Activity;
-import android.app.DatePickerDialog;
 import android.app.Instrumentation;
 import android.content.Context;
-import android.content.DialogInterface;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.test.ActivityInstrumentationTestCase2;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.DatePicker;
+import android.widget.EditText;
 import android.widget.ListView;
 import android.widget.TextView;
 import java.io.FileInputStream;
@@ -68,6 +68,10 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
 
   public void testDayAndAppDrillDownHaveExactCounts() throws Exception {
     main = getActivity();
+    EditText originalSearch = (EditText) await(main,
+        v -> v instanceof EditText && "搜尋通知、App 或備註".contentEquals(((EditText) v).getHint()),
+        "records search");
+    getInstrumentation().runOnMainSync(() -> originalSearch.setText("today"));
     LocalDate yesterday = today.minusDays(1);
     openDashboard();
     awaitText(dashboard, today.minusDays(6) + " ～ " + today);
@@ -79,9 +83,9 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     awaitText(dashboard, "丙 App");
     capture("analysis-app-ranking.png");
     scrollAnalysis(0);
-    click(awaitText(dashboard, "今天"));
+    choosePeriod("今天");
     awaitText(dashboard, today + " · 2 則");
-    click(awaitText(dashboard, "近 30 天"));
+    choosePeriod("近 30 天");
     awaitText(dashboard, today.minusDays(29) + " ～ " + today);
     assertFullChart("analysis_daily_chart", 30);
     assertFullChart("analysis_hourly_chart", 24);
@@ -90,54 +94,80 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     awaitText(dashboard, "通知最多 09:00–09:59");
     scrollAnalysis(430);
     capture("analysis-charts.png");
+    assertTrue(awaitText(dashboard, "近 30 天 ▾").getGlobalVisibleRect(new android.graphics.Rect()));
+    assertTrue(awaitText(dashboard, "全部 App ▾").getGlobalVisibleRect(new android.graphics.Rect()));
     scrollAnalysis(0);
     click(await(dashboard, v -> "查看 甲 App 的趨勢".equals(v.getContentDescription()), "App trend"));
-    awaitText(dashboard, "甲 App · 顯示全部 App");
+    awaitText(dashboard, "甲 App ▾");
+    chooseApp("甲 App ▾", BETA);
+    awaitText(dashboard, "乙 App ▾");
+    awaitText(dashboard, today + " · 2 則");
+    awaitText(dashboard, today.minusDays(29) + " ～ " + today);
+    chooseApp("乙 App ▾", ALPHA);
+    awaitText(dashboard, "甲 App ▾");
     dashboard = startDashboard(() -> getInstrumentation().runOnMainSync(dashboard::recreate));
-    awaitText(dashboard, "甲 App · 顯示全部 App");
+    awaitText(dashboard, "甲 App ▾");
     View day = await(dashboard, v -> (yesterday + "，84 則").equals(v.getContentDescription()), "yesterday bar");
     click(day);
     assertTrue(day.isSelected());
     click(await(dashboard, v -> "analysis_daily_records".equals(v.getTag()), "view selected date"));
-    awaitText(main, yesterday + " ～ " + yesterday);
+    awaitText(main, "分析紀錄");
+    awaitText(main, yesterday.toString());
     awaitText(main, "84 則");
+    awaitText(main, "甲 App");
+    View nav = await(main, v -> v instanceof GlassNavigation, "main navigation");
+    assertEquals(View.GONE, nav.getVisibility());
+    EditText scopedSearch = (EditText) await(main,
+        v -> v instanceof EditText && "搜尋這些通知".contentEquals(((EditText) v).getHint()),
+        "search within the analysis scope");
+    getInstrumentation().runOnMainSync(() -> scopedSearch.setText("yesterday 83"));
+    awaitText(main, "1 則");
 
     dashboard = startDashboard(() -> getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK));
     awaitText(dashboard, today.minusDays(29) + " ～ " + today);
-    awaitText(dashboard, "甲 App · 顯示全部 App");
+    awaitText(dashboard, "甲 App ▾");
     View restored = await(dashboard, v -> (yesterday + "，84 則").equals(v.getContentDescription()), "restored date");
     assertTrue(restored.isSelected());
-    click(awaitText(dashboard, "今天"));
+    choosePeriod("今天");
     awaitText(dashboard, "這段期間沒有已保存的通知");
     assertNull(dashboard.getWindow().getDecorView().findViewWithTag("analysis_daily_chart"));
     click(awaitText(dashboard, "查看近 30 天"));
-    awaitText(dashboard, "甲 App · 顯示全部 App");
-    click(awaitText(dashboard, "甲 App · 顯示全部 App"));
+    awaitText(dashboard, "甲 App ▾");
+    chooseApp("甲 App ▾", null);
     awaitText(dashboard, "App 排行");
     int scrollBeforeDrill = scrollAnalysis(96);
     assertTrue("The ranking should be scrollable", scrollBeforeDrill < 0);
     click(await(dashboard, v -> ALPHA.equals(v.getTag()), "App records"));
     awaitText(main, today.minusDays(29) + " ～ " + today);
     awaitText(main, "85 則");
-    awaitText(main, "甲 App ▾");
-    View back = awaitText(main, "返回通知分析");
+    awaitText(main, "甲 App");
+    View back = awaitText(main, "返回分析");
     dashboard = startDashboard(() -> click(back));
     awaitText(dashboard, "App 排行");
     assertEquals(scrollBeforeDrill, scrollAnalysis(null));
+    click(awaitText(dashboard, "返回"));
+    awaitText(main, "通知紀錄");
+    await(main, v -> v instanceof EditText && "today".contentEquals(((EditText) v).getText()),
+        "restored records search");
+    assertEquals(View.VISIBLE, nav.getVisibility());
   }
 
   public void testCustomRangeAndEarlierChartPage() throws Exception {
     main = getActivity();
     openDashboard();
-    click(awaitText(dashboard, "近 30 天"));
+    choosePeriod("近 30 天");
     awaitText(dashboard, today.minusDays(29) + " ～ " + today);
-    click(awaitText(dashboard, "自訂日期"));
+    choosePeriod("自訂日期");
     AppDialog dialog = activeDialog(dashboard);
     View dialogView = dialog.getWindow().getDecorView();
+    DatePicker calendar = dialogView.findViewWithTag("analysis_calendar");
+    assertNotNull(calendar);
     LocalDate first = today.minusDays(60), last = today.minusDays(15);
-    chooseDate(dialogView.findViewWithTag("analysis_start_date"), first, RecordFilters.MIN_DATE);
-    chooseDate(dialogView.findViewWithTag("analysis_end_date"), last, first);
+    chooseDate(dialogView.findViewWithTag("analysis_start_date"), calendar, first, RecordFilters.MIN_DATE);
+    chooseDate(dialogView.findViewWithTag("analysis_end_date"), calendar, last, first);
+    assertSame(dialog, activeDialog(dashboard));
     assertNotNull(find(dialogView, v -> v instanceof TextView && "共 46 天".contentEquals(((TextView) v).getText())));
+    capture("analysis-date-range.png");
     click(dialog.getButton(AppDialog.BUTTON_POSITIVE));
     awaitText(dashboard, first + " ～ " + last);
     LocalDate older = today.minusDays(55);
@@ -145,24 +175,49 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     click(awaitText(dashboard, "前一段"));
     click(await(dashboard, v -> (older + "，1 則").equals(v.getContentDescription()), "earlier date bar"));
     click(await(dashboard, v -> "analysis_daily_records".equals(v.getTag()), "view earlier date"));
-    awaitText(main, older + " ～ " + older);
+    awaitText(main, older.toString());
     awaitText(main, "1 則");
   }
 
-  private void chooseDate(View button, LocalDate date, LocalDate minimum) throws Exception {
+  private void choosePeriod(String name) throws Exception {
+    click(await(dashboard, v -> v.getContentDescription() != null
+        && v.getContentDescription().toString().startsWith("日期範圍，"), "date range filter"));
+    View option = find(activeDialog(dashboard).getWindow().getDecorView(),
+        v -> name.equals(v.getContentDescription()));
+    assertNotNull(option);
+    click(option);
+  }
+
+  private void chooseApp(String current, String target) throws Exception {
+    click(awaitText(dashboard, current));
+    AppDialog picker = activeDialog(dashboard);
+    View decor = picker.getWindow().getDecorView();
+    if (target != null) {
+      EditText search = (EditText) find(decor, v -> v instanceof EditText);
+      assertNotNull(search);
+      getInstrumentation().runOnMainSync(() -> search.setText(target));
+    }
+    String tag = target == null ? "analysis_picker_all" : target;
+    long deadline = SystemClock.elapsedRealtime() + 10000;
+    View option;
+    do {
+      getInstrumentation().waitForIdleSync();
+      option = decor.findViewWithTag(tag);
+      if (option != null) break;
+      SystemClock.sleep(40);
+    } while (SystemClock.elapsedRealtime() < deadline);
+    assertNotNull("Missing App filter option " + tag, option);
+    click(option);
+  }
+
+  private void chooseDate(View button, DatePicker calendar, LocalDate date, LocalDate minimum) {
     assertNotNull(button);
     click(button);
-    Field field = AnalysisActivity.class.getDeclaredField("datePicker");
-    field.setAccessible(true);
-    DatePickerDialog picker = (DatePickerDialog) field.get(dashboard);
-    assertNotNull(picker);
     getInstrumentation().runOnMainSync(() -> {
-      assertEquals(minimum.atStartOfDay(zone).toInstant().toEpochMilli(), picker.getDatePicker().getMinDate());
-      picker.updateDate(date.getYear(), date.getMonthValue() - 1, date.getDayOfMonth());
-      assertTrue(picker.getButton(DialogInterface.BUTTON_POSITIVE).performClick());
+      assertEquals(minimum.atStartOfDay(zone).toInstant().toEpochMilli(), calendar.getMinDate());
+      calendar.updateDate(date.getYear(), date.getMonthValue() - 1, date.getDayOfMonth());
     });
-    getInstrumentation().waitForIdleSync();
-    assertEquals(date.toString(), ((TextView) button).getText().toString());
+    assertTrue(((TextView) button).getText().toString().endsWith(date.toString()));
   }
 
   private void assertFullChart(String tag, int count) throws Exception {
