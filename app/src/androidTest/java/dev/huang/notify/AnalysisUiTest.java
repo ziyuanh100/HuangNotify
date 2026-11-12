@@ -167,8 +167,13 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     chooseDate(dialogView.findViewWithTag("analysis_end_date"), calendar, last, first);
     assertSame(dialog, activeDialog(dashboard));
     assertNotNull(find(dialogView, v -> v instanceof TextView && "共 46 天".contentEquals(((TextView) v).getText())));
+    getInstrumentation().waitForIdleSync();
+    View apply = dialog.getButton(AppDialog.BUTTON_POSITIVE);
+    android.graphics.Rect visible = new android.graphics.Rect();
+    assertTrue(apply.getGlobalVisibleRect(visible));
+    assertEquals(apply.getHeight(), visible.height());
     capture("analysis-date-range.png");
-    click(dialog.getButton(AppDialog.BUTTON_POSITIVE));
+    click(apply);
     awaitText(dashboard, first + " ～ " + last);
     LocalDate older = today.minusDays(55);
     awaitText(dashboard, older + " · 1 則");

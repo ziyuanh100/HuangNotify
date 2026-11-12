@@ -19,6 +19,7 @@ import android.widget.DatePicker;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import java.text.NumberFormat;
 import java.time.LocalDate;
@@ -249,9 +250,12 @@ public final class AnalysisActivity extends Activity {
     fields.addView(edges);
     u.gap(fields, 6);
     fields.addView(span);
-    fields.addView(calendar, new LinearLayout.LayoutParams(-1, -2));
+    u.gap(fields, 6);
+    ScrollView calendarScroll = new ScrollView(this);
+    calendarScroll.addView(calendar, new ScrollView.LayoutParams(-1, -2));
+    fields.addView(calendarScroll, new LinearLayout.LayoutParams(-1, 0, 1));
     update.run();
-    new AppDialog.Builder(this).setTitle("自訂日期").setView(fields).setNegativeButton("取消", null)
+    new AppDialog.Builder(this).setTitle("自訂日期").setExpandedView(fields).setNegativeButton("取消", null)
         .setPositiveButton("套用", (dialog, which) -> {
           customFirst = dates[0].toString();
           customLast = dates[1].toString();
