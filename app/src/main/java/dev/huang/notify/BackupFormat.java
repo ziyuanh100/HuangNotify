@@ -61,7 +61,7 @@ public final class BackupFormat {
       integer(o, "favorite", 0, 1); integer(o, "reason", 0, 1000);
       validateImages(o,format,imageIds,usedImages);
       JSONArray versions = o.getJSONArray("versions");
-      if (versions.length() == 0 || (versionCount += versions.length()) > 200000)
+      if (versions.length() == 0 || (versionCount += versions.length()) > BackupArchive.MAX_VERSIONS)
         throw new IllegalArgumentException("更新歷程數量錯誤");
       for (int j = 0; j < versions.length(); j++) {
         JSONObject v = versions.getJSONObject(j);

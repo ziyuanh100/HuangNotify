@@ -14,8 +14,10 @@ import org.json.*;
 final class BackupArchive {
   static final String[] TEXT={"id","nkey","pkg","app","title","body","note"};
   static final String[] TIMES={"posted","first_seen","updated","removed","reason","favorite"};
-  // The streamed byte limit bounds history without a separate cutoff for frequently updated records.
   static final int MAX_RECORDS=100000,MAX_IMAGES=100000;
+  static final int MAX_VERSIONS = 2_000_000;
+  static final String VERSION_LIMIT = String.format(Locale.TAIWAN, "%,d 筆", MAX_VERSIONS);
+  static final String TOO_MANY_VERSIONS = "單份備份的更新歷程超過 " + VERSION_LIMIT;
   static List<String> refs(SQLiteDatabase db,String table,String column,String id) {
     List<String> result=new ArrayList<>();
     try(Cursor c=db.rawQuery("SELECT image_hash FROM "+table+" WHERE "+column+"=? ORDER BY position",new String[]{id})){while(c.moveToNext())result.add(c.getString(0));}return result;
@@ -36,6 +38,11 @@ final class BackupArchive {
 
   static void write(SQLiteDatabase db, OutputStream destination, BackupTask task) throws Exception {
     task.phase(task.encryptedExport ? "建立與加密備份" : "建立備份", 0);
+    task.check();
+    // Export uses a private snapshot. Check before writing any records so the error identifies this limit.
+    try (Cursor overLimit = db.rawQuery("SELECT 1 FROM versions LIMIT 1 OFFSET " + MAX_VERSIONS, null)) {
+      if (overLimit.moveToFirst()) throw invalid(TOO_MANY_VERSIONS);
+    }
     try (BackupJsonWriter writer = new BackupJsonWriter(new LimitedOutput(destination, task))) {
       writer.beginObject().name("format").value("HuangNotify").name("version").value(3)
           .name("created").value(System.currentTimeMillis()).name("records").beginArray();
@@ -262,8 +269,9 @@ final class BackupArchive {
   }
   private static void readVersions(JsonReader r,Stage stage,BackupTask task,int owner)throws Exception {
     r.beginArray();while(r.hasNext()) {
+      if (++stage.versions > MAX_VERSIONS) throw invalid(TOO_MANY_VERSIONS);
       JSONObject data=readObject(r,stage,task,owner,false);validateRow(data,false);
-      ContentValues v=values(data,false);v.put("owner",owner);v.put("seq",++stage.versions);stage.db.insertOrThrow("versions",null,v);putRefs(stage,data,"v",data.getString("id"));
+      ContentValues v=values(data,false);v.put("owner",owner);v.put("seq",stage.versions);stage.db.insertOrThrow("versions",null,v);putRefs(stage,data,"v",data.getString("id"));
     }r.endArray();
   }
   static ContentValues values(JSONObject data,boolean record)throws Exception {
