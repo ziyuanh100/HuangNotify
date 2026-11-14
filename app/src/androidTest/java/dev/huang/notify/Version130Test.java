@@ -24,6 +24,36 @@ public class Version130Test extends AndroidTestCase {
       try{try(RandomAccessFile edit=new RandomAccessFile(file.ready,"rw")){edit.seek(45);int value=edit.read();edit.seek(45);edit.write(value^1);}try{BackupFiles.save(getContext(),file,Uri.parse(id),new BackupTask());fail("Mutated cached source was accepted");}catch(IOException expected){}}finally{d.delete(id);}
     }
   }
+  public void testPagedArchivePreservesAllRecordsAndEqualTimeHistory() throws Exception {
+    NotificationImages.Attachment picture=ImageStoreTest.picture(0xff146c59);
+    Record record=capture("history","首則",picture);
+    String last="含引號 \"、反斜線 \\、分隔符 \u2028 和表情 🙂";
+    for(int i=1;i<=70;i++)s.capture("history","v130.fixture","Fixture","標題",i==70?last:"版本 "+i,2);
+    s.favorite(record.id,true);
+    s.note(record.id,last);
+    for(int i=0;i<70;i++)s.capture("row-"+i,"v130.fixture","Fixture","標題","附加通知",3);
+    ContentValues sameTime=new ContentValues();
+    sameTime.put("time",100);
+    s.getWritableDatabase().update("versions",sameTime,"record_id=?",new String[]{record.id});
+    JSONArray before=s.versions(record.id);
+    File json=new File(dir,"paged.json");
+    try(OutputStream out=new FileOutputStream(json)){BackupArchive.write(s.getReadableDatabase(),out,new BackupTask());}
+    try(Legacy12BackupArchive.Stage stage=Legacy12BackupArchive.read(json,new File(dir,"legacy.db"),new BackupTask())){
+      assertEquals(71,stage.records);
+      assertEquals(141,stage.versions);
+      assertEquals(1,stage.images);
+    }
+    try(BackupArchive.Stage stage=BackupArchive.read(json,new File(dir,"restore.db"),new BackupTask())){
+      s.getWritableDatabase().delete("records",null,null);
+      s.pruneImages();
+      assertEquals(71,s.restoreStage(stage,true,new BackupTask())[0]);
+      Record restored=s.list("",null,true,false,1).get(0);
+      assertEquals(last,restored.text);
+      assertEquals(last,restored.note);
+      assertEquals(before.toString(),s.versions(record.id).toString());
+      assertNotNull(s.image(picture.hash));
+    }
+  }
   public void testDateAndImagesCombineIncludingHistoricalImageAndStableOrdering()throws Exception{
     Record a=capture("a","needle",ImageStoreTest.picture(0xff146c59));s.capture("a","v130.fixture","Fixture","標題","needle",2,NotificationImages.Result.empty("none"));Record b=capture("b","needle",null);s.favorite(a.id,true);
     long[] range=RecordFilters.bounds("2026-11-01","2026-11-01",java.time.ZoneId.of("UTC"));ContentValues v=new ContentValues();v.put("first_seen",range[0]);s.getWritableDatabase().update("records",v,null,null);
