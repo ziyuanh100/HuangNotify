@@ -52,7 +52,7 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
     assertSame(nav, decor.findViewWithTag("floating_nav"));
     assertTrue(nav.findViewWithTag("nav_settings").isSelected());
     assertNotNull(find(decor, "偏好設定"));
-    assertNotNull(find(decor, "建立備份"));
+    assertNotNull(find(decor, "備份與儲存"));
 
     Rect navBounds = new Rect(), hostBounds = new Rect(), scrollBounds = new Rect();
     ScrollView scroll = decor.findViewWithTag("settings_scroll");
@@ -240,10 +240,11 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
       getInstrumentation().runOnMainSync(()->((View)settings.getParent()).performClick()); getInstrumentation().waitForIdleSync();
       assertEquals(!previous,recordSwitch(activity.getWindow().getDecorView()).isChecked());
       capture("record-switch.png");
-      View backup=find(activity.getWindow().getDecorView(),"自動加密備份");
+      View backup=find(activity.getWindow().getDecorView(),"備份與儲存");
       getInstrumentation().runOnMainSync(()->((View)backup.getParent().getParent()).performClick());
       getInstrumentation().waitForIdleSync(); capture("auto-backup.png");
-      getInstrumentation().runOnMainSync(()->AppDialog.dismissAll(activity));
+      getInstrumentation().runOnMainSync(activity::onBackPressed);
+      getInstrumentation().waitForIdleSync();
       View update=find(activity.getWindow().getDecorView(),"更新下載與安裝");
       getInstrumentation().runOnMainSync(()->((View)update.getParent().getParent()).performClick());
       getInstrumentation().waitForIdleSync(); capture("update-options.png");
@@ -261,6 +262,9 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
     getInstrumentation().runOnMainSync(() -> scroll.scrollTo(0, offset));
     assertEquals(offset, scroll.getScrollY());
 
+    View backup = find(activity.getWindow().getDecorView(), "備份與儲存");
+    getInstrumentation().runOnMainSync(() -> ((View) backup.getParent().getParent()).performClick());
+    getInstrumentation().waitForIdleSync();
     String title = "settings-scroll-" + java.util.UUID.randomUUID();
     Record record = Store.IO.submit(() -> {
       Store store = Store.get(activity);
@@ -286,8 +290,10 @@ public class UiTest extends ActivityInstrumentationTestCase2<MainActivity> {
         getInstrumentation().waitForIdleSync();
       }
       assertTrue(summary.getText().toString().startsWith(expected));
-      assertSame(scroll, activity.getWindow().getDecorView().findViewWithTag("settings_scroll"));
-      assertEquals(offset, scroll.getScrollY());
+      getInstrumentation().runOnMainSync(activity::onBackPressed);
+      getInstrumentation().waitForIdleSync();
+      ScrollView restored = activity.getWindow().getDecorView().findViewWithTag("settings_scroll");
+      assertEquals(offset, restored.getScrollY());
     } finally {
       Store.IO.submit(() -> Store.get(activity).delete(record.id)).get();
     }

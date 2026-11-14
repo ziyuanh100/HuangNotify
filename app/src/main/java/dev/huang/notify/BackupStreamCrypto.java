@@ -10,7 +10,9 @@ import javax.crypto.spec.*;
 
 /** HNBK2: bounded AES-GCM frames, with an authenticated terminal frame and strict EOF. */
 public final class BackupStreamCrypto {
-  public static final long MAX_BYTES=100L*1024*1024;
+  static final int MAX_MIB=250;
+  public static final long MAX_BYTES=MAX_MIB*1024L*1024L;
+  static final String TOO_LARGE="單份備份超過 "+MAX_MIB+" MiB，請先整理通知或圖片";
   static final int CHUNK=64*1024, ITERATIONS=210000, HEADER=33;
   public static final long MAX_FILE_BYTES=MAX_BYTES+((MAX_BYTES+CHUNK-1)/CHUNK+1)*20+HEADER;
   static final byte[] MAGIC={'H','N','B','K',2};
@@ -45,7 +47,7 @@ public final class BackupStreamCrypto {
     public void write(int b)throws IOException{byte[] one={(byte)b};write(one,0,1);}
     public void write(byte[] bytes,int offset,int length)throws IOException{
       if(closed)throw new IOException("備份輸出已關閉");if(offset<0||length<0||offset>bytes.length-length)throw new IndexOutOfBoundsException();
-      check(cancelled);if(total+used+length>MAX_BYTES)throw new BackupProblem("備份超過 100 MiB，請先整理紀錄");
+      check(cancelled);if(total+used+length>MAX_BYTES)throw new BackupProblem(TOO_LARGE);
       while(length>0){check(cancelled);int n=Math.min(CHUNK-used,length);System.arraycopy(bytes,offset,buffer,used,n);used+=n;offset+=n;length-=n;if(used==CHUNK)emit();}
     }
     private void emit()throws IOException{
@@ -69,7 +71,8 @@ public final class BackupStreamCrypto {
       Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");
       while(true) {
         check(cancelled);int size=in.readInt();
-        if(size<0 || size>CHUNK || total+size>MAX_BYTES || index>MAX_BYTES/CHUNK+1)throw new BackupProblem("加密備份大小或區塊格式錯誤");
+        if(total+size>MAX_BYTES)throw new BackupProblem(TOO_LARGE);
+        if(size<0 || size>CHUNK || index>MAX_BYTES/CHUNK+1)throw new BackupProblem("加密備份區塊格式錯誤");
         byte[] encrypted=new byte[size+16];in.readFully(encrypted);byte[] clear=frame(cipher,Cipher.DECRYPT_MODE,key,header,index++,size,total).doFinal(encrypted);
         try {
           if(size==0) {if(in.read()!=-1)throw new BackupProblem("備份末尾含多餘資料");check(cancelled);out.flush();return;}

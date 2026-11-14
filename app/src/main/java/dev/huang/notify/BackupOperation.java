@@ -16,8 +16,10 @@ final class BackupOperation {
   private static BackupOperation current;
   private static WeakReference<Observer> observer=new WeakReference<>(null);
   final Context context;final String id=UUID.randomUUID().toString();final BackupTask task=new BackupTask();
-  volatile BackupFiles.Session session;State state;boolean pickerLaunched,working,restoreSettings;String error="";int[] counts;
-  private BackupOperation(Context c,State state){context=c.getApplicationContext();this.state=state;if(state==State.IMPORT_PICKER)task.pauseClock();context.getSharedPreferences("backup_operation",0).edit().putString("pending",id).apply();}
+  final boolean exporting;
+  volatile BackupFiles.Session session;State state;boolean pickerLaunched,working,restoreSettings;
+  BackupFiles.Failure failure;String error="";int[] counts;
+  private BackupOperation(Context c,State state){context=c.getApplicationContext();this.state=state;exporting=state==State.EXPORTING;if(state==State.IMPORT_PICKER)task.pauseClock();context.getSharedPreferences("backup_operation",0).edit().putString("pending",id).apply();}
   static BackupOperation current(){return current;}
   static void observe(Observer value){observer=new WeakReference<>(value);}
   static void detach(Observer value){if(observer.get()==value)observer.clear();}
@@ -38,12 +40,16 @@ final class BackupOperation {
       catch(Exception e){MAIN.post(()->{working=false;if(current==this)fail(e);});}
     });
   }
-  void fail(Throwable cause){error=BackupFiles.error(cause);state=State.FAILED;notifyUi();}
+  void fail(Throwable cause){failure=task.cancelled.get()?BackupFiles.Failure.CANCELLED:BackupFiles.failure(cause);error=BackupFiles.error(cause);task.pauseClock();state=State.FAILED;notifyUi();}
   void cancel(){task.cancelled.set(true);if(working){state=State.CANCELLING;notifyUi();}else fail(new java.io.InterruptedIOException());}
   void export(char[] password){execute(State.EXPORTING,State.EXPORT_PICKER,()->{try{session=BackupFiles.export(context,password,task);}finally{if(password!=null)Arrays.fill(password,'\0');}});}
   void read(Uri uri){execute(State.READING,State.PREVIEW,()->{session=BackupFiles.read(context,uri,task);});}
   void unlock(char[] password){execute(State.UNLOCKING,State.PREVIEW,()->{try{BackupFiles.unlock(session,password,task);}finally{Arrays.fill(password,'\0');}});}
-  void save(Uri uri){execute(State.SAVING,State.DONE,()->BackupFiles.save(context,session,uri,task));}
+  void save(Uri uri){execute(State.SAVING,State.DONE,()->{
+    BackupFiles.save(context,session,uri,task);
+    BackupReceipt.manual(context,uri,session.readyBytes);
+  });}
+  void chooseAnotherDestination(){if(current!=this)return;pickerLaunched=false;state=State.EXPORT_PICKER;notifyUi();}
   void merge(){execute(State.MERGING,State.DONE,()->{counts=Store.IO.submit(()->Store.get(context).restoreStage(session.stage,restoreSettings,task)).get();});}
   State visibleState(){if(state==State.PREVIEW&&session!=null&&session.stage==null&&session.encrypted)return State.LOCKED;return state;}
 }

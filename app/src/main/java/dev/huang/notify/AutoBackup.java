@@ -26,25 +26,50 @@ final class AutoBackup {
   static SharedPreferences prefs(Context c) { return c.getSharedPreferences("auto_backup", 0); }
   static boolean enabled(Context c) { return prefs(c).getBoolean("enabled", false); }
   static int keep(Context c) { return prefs(c).getInt("keep", 7); }
-  static String status(Context c) {
-    SharedPreferences p = prefs(c); String error = p.getString("error", "");
-    String last = p.getLong("success", 0) == 0 ? "尚未成功備份" : "最後成功：" + new java.text.SimpleDateFormat("MM/dd HH:mm", Locale.TAIWAN).format(new Date(p.getLong("success", 0)));
-    return (RUNNING.get() ? (activeTask==null?"準備備份…":activeTask.status()) : enabled(c) ? "每日加密備份 · 保留 " + keep(c) + " 份" : "尚未開啟") + "\n" + last + (error.isEmpty() ? "" : "\n" + error);
+  static boolean running() { return RUNNING.get(); }
+  static BackupTask task() { return activeTask; }
+  static String folderName(Context c) { return prefs(c).getString("folder_name", "已選擇的資料夾"); }
+  static Uri folder(Context c) { return Uri.parse(prefs(c).getString("tree", "")); }
+  static void cancel() { synchronized (LOCK) { if (active != null) active.set(true); } }
+
+  static void setKeep(Context c, int keep) {
+    if (keep != 3 && keep != 7 && keep != 14 && keep != 30) throw new IllegalArgumentException("保留份數不正確");
+    synchronized (LOCK) { prefs(c).edit().putInt("keep", keep).apply(); }
   }
+
   static void configure(Context c, Uri tree, char[] password, int keep) throws Exception {
-    String wrapped = DeviceSecret.wrap(password);
     if (keep < 1 || keep > 30) throw new IllegalArgumentException("保留份數不正確");
+    String wrapped = DeviceSecret.wrap(password);
+    String folderName = BackupReceipt.location(c, tree);
     synchronized (LOCK) {
       SharedPreferences p = prefs(c);
-      SharedPreferences.Editor edit = p.edit();
-      if (!tree.toString().equals(p.getString("tree",""))) edit.remove("success");
+      SharedPreferences.Editor edit = folderEdit(p, tree, folderName);
       if (active != null) active.set(true);
-      if (!edit.putString("tree", tree.toString()).putString("secret", wrapped)
+      if (!edit.putString("secret", wrapped)
           .putString("owner", p.getString("owner", UUID.randomUUID().toString()))
           .putLong("generation", p.getLong("generation",0)+1).putInt("keep", keep)
           .putBoolean("enabled", true).remove("error").commit()) throw new IOException("無法儲存備份設定");
     }
     schedule(c);
+  }
+  static void moveFolder(Context c, Uri tree) throws IOException {
+    String folderName = BackupReceipt.location(c, tree);
+    synchronized (LOCK) {
+      SharedPreferences p = prefs(c);
+      if (!p.getBoolean("enabled", false)) throw new IOException("自動備份尚未開啟");
+      if (active != null) active.set(true);
+      if (!folderEdit(p, tree, folderName).remove("error")
+          .putLong("generation", p.getLong("generation", 0)+1).commit()) throw new IOException("無法儲存備份位置");
+    }
+  }
+
+  private static SharedPreferences.Editor folderEdit(SharedPreferences p, Uri tree, String name) {
+    SharedPreferences.Editor edit = p.edit().putString("tree", tree.toString()).putString("folder_name", name);
+    if (!tree.toString().equals(p.getString("tree", ""))) {
+      if (!p.contains("verified_time") && p.contains("success")) edit.putLong("verified_time", p.getLong("success", 0));
+      edit.remove("success");
+    }
+    return edit;
   }
   static void disable(Context c) {
     synchronized (LOCK) {
@@ -63,12 +88,12 @@ final class AutoBackup {
   }
   static void run(Context context, boolean force, AtomicBoolean cancelled, Callback callback) {
     Context c = context.getApplicationContext();
-    final long generation, success; final String tree, secret, owner; final int count;
+    final long generation, success; final String tree, secret, owner;
     synchronized (LOCK) {
       if (!RUNNING.compareAndSet(false, true)) { callback.done("已有備份作業進行中"); return; }
       SharedPreferences p=prefs(c); active=cancelled;
       generation=p.getLong("generation",0); success=p.getLong("success",0);
-      tree=p.getString("tree", ""); secret=p.getString("secret", ""); owner=p.getString("owner", ""); count=keep(c);
+      tree=p.getString("tree", ""); secret=p.getString("secret", ""); owner=p.getString("owner", "");
     }
     IO.execute(() -> {
       BackupFiles.Session session=null; char[] password = null; String message;
@@ -83,10 +108,22 @@ final class AutoBackup {
           if (cancelled.get()) throw new InterruptedIOException();
           String prefix = "HuangNotify_auto_" + owner + "_";
           String name = prefix + String.format(Locale.ROOT, "%013d", System.currentTimeMillis()) + "_" + UUID.randomUUID() + ".hnbk";
-          boolean clean = saveVerified(new Documents(c, Uri.parse(tree)), name, prefix, session, count, task);
+          Documents destination = new Documents(c, Uri.parse(tree));
+          String id = writeVerified(destination, name, session.ready, task, BackupFiles.expected(session,task));
+          long completed = System.currentTimeMillis();
+          int keep;
           synchronized (LOCK) {
             if (cancelled.get() || generation!=prefs(c).getLong("generation",0)) throw new InterruptedIOException();
-            prefs(c).edit().putLong("success", System.currentTimeMillis()).putString("error", clean ? "" : "新備份成功；部分舊檔無法清理，稍後可重試").apply();
+            SharedPreferences p = prefs(c);
+            BackupReceipt.record(p.edit().putLong("success", completed).remove("error"), completed,
+                session.readyBytes, p.getString("folder_name", "已選擇的資料夾")).apply();
+            keep = keep(c);
+          }
+          task.phase(BackupTask.PRUNE, 0);
+          boolean clean = prune(destination, id, prefix, keep, cancelled);
+          synchronized (LOCK) {
+            if (!clean && !cancelled.get() && generation==prefs(c).getLong("generation",0))
+              prefs(c).edit().putString("error", "新備份成功，部分舊檔未能清理").apply();
           }
           message = clean ? "加密備份已完成並驗證" : "備份成功，舊檔清理未完成";
         }
@@ -135,16 +172,23 @@ final class AutoBackup {
     task.phase("檢查備份檔",size);try(InputStream in=new FileInputStream(file)){expected=BackupFiles.digest(in,size,task);}
     return saveVerified(destination,name,prefix,file,keep,task,expected);
   }
-  static boolean saveVerified(Destination d,String name,String prefix,BackupFiles.Session s,int keep,BackupTask task)throws Exception{return saveVerified(d,name,prefix,s.ready,keep,task,BackupFiles.expected(s,task));}
+  static boolean saveVerified(Destination destination, String name, String prefix, BackupFiles.Session session,
+      int keep, BackupTask task) throws Exception {
+    return saveVerified(destination,name,prefix,session.ready,keep,task,BackupFiles.expected(session,task));
+  }
   private static boolean saveVerified(Destination destination,String name,String prefix,File file,int keep,BackupTask task,byte[] expected)throws Exception {
-    if(keep<1||keep>30)throw new BackupProblem("保留份數不正確");task.check();long size=file.length();String id=destination.create(name);
+    if(keep<1||keep>30)throw new BackupProblem("保留份數不正確");
+    return prune(destination,writeVerified(destination,name,file,task,expected),prefix,keep,task.cancelled);
+  }
+  private static String writeVerified(Destination destination,String name,File file,BackupTask task,byte[] expected)throws Exception {
+    task.check();long size=file.length();String id=destination.create(name);
     try {
-      task.phase("儲存備份",size);
+      task.phase(BackupTask.SAVE,size);
       try(InputStream in=new FileInputStream(file);OutputStream out=destination.write(id)){if(out==null)throw new IOException();BackupFiles.copy(in,out,BackupStreamCrypto.MAX_FILE_BYTES,task);}
-      task.phase("驗證已儲存的備份",size);
+      task.phase(BackupTask.VERIFY,size);
       try(InputStream in=destination.read(id)){if(in==null||!MessageDigest.isEqual(expected,BackupFiles.digest(in,size,task)))throw new IOException("備份驗證失敗");}
     }catch(Exception e){try{destination.delete(id);}catch(Exception ignored){}throw e;}
-    return prune(destination,id,prefix,keep,task.cancelled);
+    return id;
   }
   private static boolean prune(Destination destination,String id,String prefix,int keep,AtomicBoolean cancelled)throws Exception {
     // Only this installation's generated filenames qualify. Never delete arbitrary user files.

@@ -37,10 +37,18 @@ import org.json.JSONObject;
 public final class MainActivity extends Activity {
   private static final int PAGE_SIZE = 80;
   private static final int ANALYSIS_REQUEST = 105;
+  private static final int BACKUP_FOLDER = 103, MOVE_BACKUP_FOLDER = 106;
+  private static final int[] BACKUP_RETENTION = {3, 7, 14, 30};
+  private static final String[] BACKUP_RETENTION_LABELS = {"3 份", "7 份", "14 份", "30 份"};
   private Ui u;
   private final List<RecordSwitch> recordSwitches = new ArrayList<>();
   private final List<TextView> recordStates = new ArrayList<>();
   private TextView backupStatus, upgradeStatus, accessSummary, retentionSummary, storageSummary;
+  private TextView lastBackup, autoBackupState, backupFolder, backupRetention, backupNow;
+  private View cancelBackup;
+  private LinearLayout autoBackupActions;
+  private ProgressBar autoBackupProgress;
+  private boolean configuringBackup;
   private ScrollView settingsScroll;
   private int settingsScrollY;
   private boolean recordingLoaded, recordingSaving;
@@ -142,7 +150,7 @@ public final class MainActivity extends Activity {
       page="settings";
       endAnalysisDrill();
     }
-    updateAnalysisBack();
+    updateBackAction();
     UpgradeManager.reconcile(this);
     UpgradeManager.recover(this);
     AutoBackup.schedule(this);
@@ -179,6 +187,7 @@ public final class MainActivity extends Activity {
     UpdateChecker.schedule(this);
     updateFlow.resume();
     backupScreen.resume();
+    if (page.equals("backup")) refreshBackupPage();
     Diagnostics.resume(this);
   }
 
@@ -188,6 +197,7 @@ public final class MainActivity extends Activity {
     updateFlow.pause();
     backupScreen.pause();
     handler.removeCallbacks(poll);
+    handler.removeCallbacks(backupTick);
     super.onPause();
   }
 
@@ -235,27 +245,29 @@ public final class MainActivity extends Activity {
     rangeEnd = b.getString("range_end", "");
   }
 
-  private void updateAnalysisBack() {
+  private void updateBackAction() {
     if (Build.VERSION.SDK_INT < 33) return;
-    if (analysisReturn != null && analysisBack == null) {
-      analysisBack = this::launchAnalysis;
+    boolean handlesBack = analysisReturn != null || page.equals("backup");
+    if (handlesBack && analysisBack == null) {
+      analysisBack = this::onBackPressed;
       getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
           OnBackInvokedDispatcher.PRIORITY_DEFAULT, analysisBack);
-    } else if (analysisReturn == null && analysisBack != null) {
+    } else if (!handlesBack && analysisBack != null) {
       getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(analysisBack);
       analysisBack = null;
     }
   }
 
   @Override public void onBackPressed() {
-    if (analysisReturn != null) launchAnalysis();
+    if (page.equals("backup")) openPage("settings");
+    else if (analysisReturn != null) launchAnalysis();
     else super.onBackPressed();
   }
 
   private void endAnalysisDrill() {
     if (filtersBeforeAnalysis != null) restoreRecordFilters(filtersBeforeAnalysis);
     analysisReturn = filtersBeforeAnalysis = null;
-    updateAnalysisBack();
+    updateBackAction();
   }
 
   private void launchAnalysis() {
@@ -274,6 +286,7 @@ public final class MainActivity extends Activity {
     hideKeyboard();
     endAnalysisDrill();
     page = nextPage;
+    updateBackAction();
     rebuildPage();
   }
 
@@ -294,6 +307,8 @@ public final class MainActivity extends Activity {
     if (settingsScroll != null) settingsScrollY = settingsScroll.getScrollY();
     settingsScroll = null;
     accessSummary = retentionSummary = storageSummary = backupStatus = upgradeStatus = null;
+    lastBackup = null;
+    handler.removeCallbacks(backupTick);
     statusTitle = null;
     overview = null;
     list = null;
@@ -304,7 +319,8 @@ public final class MainActivity extends Activity {
     content = u.column();
     content.setFocusableInTouchMode(true);
     root.addView(content, 0, new FrameLayout.LayoutParams(-1, -1));
-    if (page.equals("settings")) buildSettings();
+    if (page.equals("backup")) buildBackupPage();
+    else if (page.equals("settings")) buildSettings();
     else buildRecords();
     content.requestFocus();
 
@@ -319,7 +335,7 @@ public final class MainActivity extends Activity {
           updateContentInsets());
     }
     nav.setPageContent(content);
-    nav.selectPage(page);
+    nav.selectPage(page.equals("backup") ? "settings" : page);
     updateKeyboardVisibility(keyboardVisible);
     root.requestApplyInsets();
     updateHeader();
@@ -327,7 +343,7 @@ public final class MainActivity extends Activity {
 
   private void updateKeyboardVisibility(boolean visible) {
     keyboardVisible = visible;
-    if (nav != null) nav.setVisibility(visible || analysisReturn != null ? View.GONE : View.VISIBLE);
+    if (nav != null) nav.setVisibility(visible || analysisReturn != null || page.equals("backup") ? View.GONE : View.VISIBLE);
     updateContentInsets();
     updateOverviewVisibility();
   }
@@ -712,7 +728,7 @@ public final class MainActivity extends Activity {
       control.setOnCheckedChangeListener((button,checked) -> changeRecording(checked));
     }
     for (TextView state:recordStates) state.setText(recordingSaving?"正在儲存設定…":recordingState());
-    if (backupStatus!=null) backupStatus.setText(AutoBackup.status(this));
+    if (backupStatus!=null) backupStatus.setText(backupSummary(BackupReceipt.latest(this)));
     if (upgradeStatus!=null) upgradeStatus.setText(UpgradeManager.status(this));
   }
   private void changeRecording(boolean enabled) {
@@ -853,7 +869,8 @@ public final class MainActivity extends Activity {
     refreshing = true;
     int gen = generation;
     String q = query, pkg = filterPkg;
-    boolean settings = page.equals("settings"), favorites = page.equals("favorites"), images = onlyImages;
+    boolean settings = page.equals("settings") || page.equals("backup");
+    boolean favorites = page.equals("favorites"), images = onlyImages;
     ZoneId zone = ZoneId.systemDefault();
     String today = LocalDate.now(zone).toString();
     long[] bounds = RecordFilters.bounds(onlyToday ? today : rangeStart,
@@ -886,7 +903,7 @@ public final class MainActivity extends Activity {
           if (gen != generation) {
             refresh();
           } else if (settings) {
-            storageSummary.setText(format(counts[0]) + " 則通知 · " + size);
+            if (storageSummary != null) storageSummary.setText(format(counts[0]) + " 則通知 · " + size);
           } else {
             showResults(records, amount, gen, exactCount);
           }
@@ -1168,11 +1185,9 @@ public final class MainActivity extends Activity {
     imageSetting(recording);
     retentionSummary = settingRow(recording, "保存期限", "", "clock", this::chooseRetention);
 
-    LinearLayout data = settingGroup(body, "備份與儲存");
-    settingRow(data, "建立備份", "匯出通知、圖片與歷程，可使用密碼加密", "backup", this::exportDialog);
-    settingRow(data, "還原備份", "預覽後合併匯入，略過重複紀錄", "backup", this::chooseImport);
-    backupStatus = settingRow(data, "自動加密備份", AutoBackup.status(this), "lock", this::autoBackupDialog);
-    storageSummary = settingRow(data, "儲存概況", format(counts[0]) + " 則通知", "apps", this::storageDialog);
+    LinearLayout data = settingGroup(body, "資料");
+    backupStatus = settingRow(data, "備份與儲存", backupSummary(BackupReceipt.latest(this)), "backup",
+        () -> openPage("backup"));
 
     LinearLayout diagnostics = settingGroup(body, "權限與診斷");
     settingRow(diagnostics, "通知診斷", "連線狀態、來源排除與最近處理結果", "check", () -> Diagnostics.show(this));
@@ -1257,45 +1272,208 @@ public final class MainActivity extends Activity {
     });
   }
 
-  private void autoBackupDialog() {
-    LinearLayout body=u.column(); body.addView(u.text(AutoBackup.status(this),14,u.muted,false));
-    u.gap(body,12); body.addView(u.text("備份使用可攜式密碼加密，換手機仍可還原。請自行記住密碼。密碼會以本機安全金鑰保護，供每日備份使用。\n\n指定資料夾若由雲端服務提供，檔案會存到該服務。低電量、省電、強制停止或資料夾失聯可能延後備份。",14,u.muted,false));
-    if (AutoBackup.enabled(this)) { TextView disable=u.button("停用自動備份",false); body.addView(disable);
-      disable.setOnClickListener(v->{ AutoBackup.disable(this); AppDialog.dismissAll(this); build(); toast("已停用，既有備份保留"); }); }
-    AppDialog.Builder dialog=new AppDialog.Builder(this).setTitle("自動加密備份").setView(body).setNegativeButton("關閉",null)
-      .setPositiveButton("選擇資料夾與設定密碼",(d,w)->{
-        try { startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION),103); }
-        catch(Exception e) { toast("無法開啟資料夾選擇器"); }
-      });
-    if (AutoBackup.enabled(this)) dialog.setNeutralButton("立即備份",(d,w)->runAutoBackup());
+  private final Runnable backupTick = this::refreshBackupPage;
+
+  private void buildBackupPage() {
+    TextView back = u.button("‹  返回設定", false);
+    back.setPadding(u.d(10), 0, u.d(10), 0);
+    back.setOnClickListener(v -> openPage("settings"));
+    LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(-2, -2);
+    backParams.setMarginStart(pageInset());
+    backParams.topMargin = u.d(6);
+    content.addView(back, backParams);
+    pageTitle(content, "備份與儲存", "backup");
+
+    ScrollView scroll = new ScrollView(this);
+    scroll.setFillViewport(true);
+    LinearLayout body = u.column();
+    body.setPadding(pageInset(), 0, pageInset(), u.d(24));
+    scroll.addView(body);
+    content.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+
+    LinearLayout recent = settingGroup(body, "最近一次成功備份");
+    recent.setPadding(u.d(16), u.d(14), u.d(16), u.d(14));
+    lastBackup = u.text("", 15, u.ink, true);
+    lastBackup.setLineSpacing(u.d(4), 1f);
+    recent.addView(lastBackup);
+
+    LinearLayout operations = settingGroup(body, "手動備份");
+    settingRow(operations, "建立備份", "匯出全部紀錄 · 單份上限 " + BackupStreamCrypto.MAX_MIB + " MiB",
+        "backup", backupScreen::exportDialog);
+    settingRow(operations, "還原備份", "先預覽檔案，再合併匯入", "check", backupScreen::chooseImport);
+
+    LinearLayout automatic = settingGroup(body, "自動加密備份");
+    automatic.setPadding(u.d(16), u.d(14), u.d(16), u.d(14));
+    autoBackupState = u.text("", 14, u.ink, false);
+    automatic.addView(autoBackupState);
+    autoBackupProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+    autoBackupProgress.setMax(100);
+    automatic.addView(autoBackupProgress, new LinearLayout.LayoutParams(-1, u.d(12)));
+    u.gap(automatic, 10);
+    backupNow = u.button("", true);
+    backupNow.setOnClickListener(v -> {
+      if (AutoBackup.enabled(this)) runAutoBackup();
+      else chooseBackupFolder(false);
+    });
+    automatic.addView(backupNow, new LinearLayout.LayoutParams(-1, -2));
+    TextView cancel = u.button("取消本次備份", false);
+    cancel.setOnClickListener(v -> { AutoBackup.cancel(); refreshBackupPage(); });
+    cancelBackup = cancel;
+    automatic.addView(cancel, new LinearLayout.LayoutParams(-1, -2));
+
+    LinearLayout actions = u.column();
+    autoBackupActions = actions;
+    automatic.addView(actions);
+    backupFolder = settingRow(actions, "更換備份資料夾", "", "backup", () -> chooseBackupFolder(true));
+    backupRetention = settingRow(actions, "保留份數", "", "clock", () ->
+        chooseBackupRetention(AutoBackup.keep(this), keep -> {
+          AutoBackup.setKeep(this, keep);
+          refreshBackupPage();
+        }));
+    settingRow(actions, "變更備份密碼", "舊備份仍使用原密碼", "lock",
+        () -> autoBackupPassword(AutoBackup.folder(this), false));
+    settingRow(actions, "停用自動備份", "保留已儲存的備份", "close", () -> {
+      AutoBackup.disable(this);
+      refreshBackupPage();
+    });
+
+    LinearLayout storage = settingGroup(body, "本機儲存");
+    storageSummary = settingRow(storage, "儲存概況", format(counts[0]) + " 則通知", "apps", this::storageDialog);
+    refreshBackupPage();
+  }
+
+  private String backupSummary(BackupReceipt receipt) {
+    if (receipt.time == 0) return "尚未記錄成功的備份";
+    return new SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.TAIWAN).format(new Date(receipt.time))
+        + " · " + (receipt.automatic ? "自動備份" : "手動備份");
+  }
+
+  private void refreshBackupPage() {
+    handler.removeCallbacks(backupTick);
+    if (lastBackup == null || !page.equals("backup")) return;
+    BackupReceipt receipt = BackupReceipt.latest(this);
+    String detail = backupSummary(receipt);
+    if (!receipt.location.isEmpty()) detail += "\n" + receipt.location;
+    if (receipt.bytes > 0) detail += "\n" + android.text.format.Formatter.formatFileSize(this, receipt.bytes);
+    if (!detail.contentEquals(lastBackup.getText())) lastBackup.setText(detail);
+
+    boolean enabled = AutoBackup.enabled(this), running = AutoBackup.running();
+    BackupTask task = AutoBackup.task();
+    String error = AutoBackup.prefs(this).getString("error", "");
+    String state = enabled ? "約每天執行一次" : "選擇資料夾與密碼後啟用";
+    if (running) {
+      state = task == null ? "準備備份…" : task.exportStep() + "\n" + task.status();
+    } else if (!error.isEmpty()) {
+      state = error;
+    }
+    if (!state.contentEquals(autoBackupState.getText())) autoBackupState.setText(state);
+    autoBackupProgress.setVisibility(running ? View.VISIBLE : View.GONE);
+    long total = task == null ? 0 : task.total;
+    autoBackupProgress.setIndeterminate(total <= 0);
+    if (total > 0) autoBackupProgress.setProgress((int) Math.min(100, task.done * 100 / total));
+    String action = enabled ? "立即備份" : "開啟自動備份";
+    if (!action.contentEquals(backupNow.getText())) backupNow.setText(action);
+    backupNow.setEnabled(!running && !configuringBackup);
+    cancelBackup.setVisibility(running ? View.VISIBLE : View.GONE);
+    cancelBackup.setEnabled(task == null || !task.cancelled.get());
+    autoBackupActions.setVisibility(enabled ? View.VISIBLE : View.GONE);
+    String location = AutoBackup.folderName(this), retention = "保留 " + AutoBackup.keep(this) + " 份";
+    if (!location.contentEquals(backupFolder.getText())) backupFolder.setText(location);
+    if (!retention.contentEquals(backupRetention.getText())) backupRetention.setText(retention);
+    for (int i = 0; i < autoBackupActions.getChildCount(); i++)
+      autoBackupActions.getChildAt(i).setEnabled(!configuringBackup);
+    if (resumed) handler.postDelayed(backupTick, running ? 250 : 1200);
+  }
+
+  private void chooseBackupFolder(boolean move) {
+    if (configuringBackup) return;
+    try {
+      startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
+          Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+              | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION), move ? MOVE_BACKUP_FOLDER : BACKUP_FOLDER);
+    } catch (Exception e) {
+      toast("無法開啟資料夾選擇器");
+    }
+  }
+
+  private void chooseBackupRetention(int current, java.util.function.IntConsumer selected) {
+    int index = 0;
+    while (index < BACKUP_RETENTION.length - 1 && BACKUP_RETENTION[index] != current) index++;
+    new AppDialog.Builder(this).setTitle("保留幾份自動備份？")
+        .setMessage("下次備份完成驗證後才會清理超過份數的舊自動備份。")
+        .setSingleChoiceItems(BACKUP_RETENTION_LABELS, index, (dialog, which) -> {
+          selected.accept(BACKUP_RETENTION[which]);
+          dialog.dismiss();
+        }).setNegativeButton("取消", null).show();
+  }
+
+  private void autoBackupPassword(Uri tree, boolean firstSetup) {
+    if (configuringBackup) return;
+    LinearLayout body = u.column();
+    body.addView(u.text("請記住備份密碼，換手機還原時會用到。舊備份仍使用建立時的密碼。", 14, u.muted, false));
+    EditText password = u.field("備份密碼（至少 8 個字元）"), confirm = u.field("再次輸入密碼");
+    password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+    confirm.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+    u.gap(body, 12); body.addView(password); u.gap(body, 8); body.addView(confirm);
+    int[] keep = {AutoBackup.keep(this)};
+    if (firstSetup) {
+      u.gap(body, 8);
+      TextView retention = u.button("保留 " + keep[0] + " 份", false);
+      retention.setOnClickListener(v -> chooseBackupRetention(keep[0], value -> {
+        keep[0] = value;
+        retention.setText("保留 " + value + " 份");
+      }));
+      body.addView(retention);
+    }
+    AppDialog dialog = new AppDialog.Builder(this).setTitle(firstSetup ? "設定自動備份" : "變更備份密碼")
+        .setView(body).setNegativeButton("取消", null)
+        .setPositiveButton(firstSetup ? "開啟並備份" : "儲存", null).create();
+    dialog.setOnShowListener(d -> dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+      if (password.length() < 8) { password.setError("至少 8 個字元"); return; }
+      if (!password.getText().toString().equals(confirm.getText().toString())) {
+        confirm.setError("兩次密碼不相同");
+        return;
+      }
+      char[] secret = password.getText().toString().toCharArray();
+      password.setText(""); confirm.setText(""); dialog.dismiss();
+      saveBackupSettings(() -> {
+        try { AutoBackup.configure(this, tree, secret, keep[0]); }
+        finally { Arrays.fill(secret, '\0'); }
+      }, firstSetup, "無法儲存備份設定，請重試");
+    }));
     dialog.show();
   }
-  private void autoBackupPassword(Uri tree) {
-    LinearLayout body=u.column();
-    body.addView(u.text("每天加密備份。新檔成功寫入並驗證後，才清理超過保留份數的本 App 自動備份。手動備份與其他檔案不會清除。\n請記住密碼，遺失後無法還原。變更密碼只影響新備份，舊檔仍需原密碼。",14,u.muted,false));
-    EditText password=u.field("備份密碼（至少 8 個字元）"), confirm=u.field("再次輸入密碼");
-    password.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD); confirm.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
-    u.gap(body, 12); body.addView(password); u.gap(body, 8); body.addView(confirm); u.gap(body, 8);
-    int[] keep={AutoBackup.keep(this)};
-    TextView retentionButton=u.button("保留 "+keep[0]+" 份",false); body.addView(retentionButton);
-    retentionButton.setOnClickListener(v->new AppDialog.Builder(this).setTitle("保留幾份自動備份？")
-      .setSingleChoiceItems(new String[]{"3 份","7 份","14 份","30 份"},keep[0]==3?0:keep[0]==7?1:keep[0]==14?2:3,(d,i)->{ keep[0]=new int[]{3,7,14,30}[i]; retentionButton.setText("保留 "+keep[0]+" 份"); d.dismiss(); }).show());
-    AppDialog dialog=new AppDialog.Builder(this).setTitle("設定自動備份").setView(body).setNegativeButton("取消",null).setPositiveButton("開啟並備份",null).create();
-    dialog.setOnShowListener(d->dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v->{
-      if (password.length()<8) { password.setError("至少 8 個字元"); return; }
-      if (!password.getText().toString().equals(confirm.getText().toString())) { confirm.setError("兩次密碼不相同"); return; }
-      char[] secret=password.getText().toString().toCharArray(); password.setText(""); confirm.setText(""); dialog.dismiss();
-      Store.IO.execute(()->{
-        boolean saved=false;
-        try { AutoBackup.configure(this,tree,secret,keep[0]); saved=true; } catch(Exception e) { }
-        finally { Arrays.fill(secret,'\0'); }
-        boolean success=saved; runOnUiThread(()->{ if (isDestroyed()) return; if (success) { build(); runAutoBackup(); } else toast("無法保護備份密碼，請重試"); });
+
+  private void saveBackupSettings(Work work, boolean backup, String failure) {
+    configuringBackup = true;
+    refreshBackupPage();
+    AutoBackup.IO.execute(() -> {
+      boolean saved;
+      try { work.run(); saved = true; } catch (Exception e) { saved = false; }
+      boolean success = saved;
+      if (success && backup) startAutoBackup();
+      runOnUiThread(() -> {
+        configuringBackup = false;
+        if (isDestroyed()) return;
+        refreshBackupPage();
+        if (!success) toast(failure);
       });
-    })); dialog.show();
+    });
   }
+
   private void runAutoBackup() {
-    toast("正在建立加密備份…");
-    AutoBackup.run(this,true,new java.util.concurrent.atomic.AtomicBoolean(),message->runOnUiThread(()->{ if (!isDestroyed()) { toast(message); if (page.equals("settings")) build(); } }));
+    if (BackupOperation.busy()) { toast("已有備份作業進行中"); return; }
+    startAutoBackup();
+    refreshBackupPage();
+  }
+
+  private void startAutoBackup() {
+    AutoBackup.run(this, true, new java.util.concurrent.atomic.AtomicBoolean(), message -> runOnUiThread(() -> {
+      if (!isDestroyed()) {
+        refreshBackupPage();
+        toast(message);
+      }
+    }));
   }
   private void upgradeOptions() {
     LinearLayout body=u.column();
@@ -1520,8 +1698,6 @@ public final class MainActivity extends Activity {
         .show();
   }
 
-  private void exportDialog() {backupScreen.exportDialog();}
-  private void chooseImport() {backupScreen.chooseImport();}
   @Override protected void onActivityResult(int request,int result,Intent data) {
     super.onActivityResult(request,result,data);
     if (request == ANALYSIS_REQUEST) {
@@ -1538,7 +1714,7 @@ public final class MainActivity extends Activity {
         onlyToday = onlyImages = false;
         query = "";
         page = "records";
-        updateAnalysisBack();
+        updateBackAction();
         rebuildPage();
       }
       return;
@@ -1547,12 +1723,14 @@ public final class MainActivity extends Activity {
     if(result!=RESULT_OK||data==null||data.getData()==null)return;
     Uri uri=data.getData();
     if(request==104){Diagnostics.save(this,uri);return;}
-    if (request == 103) {
+    if (request == BACKUP_FOLDER || request == MOVE_BACKUP_FOLDER) {
       try {
         int flags=data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
         if (flags != (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) throw new SecurityException("需要資料夾讀寫權限");
         getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        autoBackupPassword(uri);
+        if (request == MOVE_BACKUP_FOLDER) saveBackupSettings(() -> AutoBackup.moveFolder(this, uri),
+            false, "無法儲存備份位置，請重新選擇");
+        else autoBackupPassword(uri, true);
       } catch(Exception e) { toast("無法保留資料夾權限，請重新選擇"); }
       return;
     }

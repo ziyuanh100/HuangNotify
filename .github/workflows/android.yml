@@ -9,13 +9,10 @@ on:
         description: Run only the synthetic backup benchmark
         type: boolean
         default: false
-      fixture_set:
-        description: Benchmark fixture selection
-        type: choice
-        default: all
-        options: [all, images-10, fragmented-10, small-retry]
 permissions:
   contents: read
+env:
+  PREVIOUS_VERSION: v1.5.3
 jobs:
   build:
     if: "inputs.benchmark_only != true && !contains(github.event.head_commit.message, '[performance-only]')"
@@ -73,9 +70,9 @@ jobs:
           ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :probe:assembleDebug
           cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/next.apk"
           cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk "$RUNNER_TEMP/upgrade-tests.apk"
-          git fetch --depth=1 origin tag v1.5.2
+          git fetch --depth=1 origin tag "$PREVIOUS_VERSION"
           mkdir -p "$RUNNER_TEMP/huangnotify-previous"
-          git archive v1.5.2 | tar -x -C "$RUNNER_TEMP/huangnotify-previous"
+          git archive "$PREVIOUS_VERSION" | tar -x -C "$RUNNER_TEMP/huangnotify-previous"
           "$RUNNER_TEMP/huangnotify-previous/gradlew" -p "$RUNNER_TEMP/huangnotify-previous" :app:assembleDebug
           cp "$RUNNER_TEMP/huangnotify-previous/app/build/outputs/apk/debug/app-debug.apk" "$RUNNER_TEMP/previous.apk"
       - name: Enable KVM
@@ -133,14 +130,14 @@ jobs:
             backup-interrupt-*
 
   backup-performance:
-    name: backup-performance (${{ matrix.kind }}-${{ matrix.size }})
+    name: backup-performance (${{ matrix.kind }})
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 8
-      matrix: ${{ fromJSON(inputs.fixture_set == 'small-retry' && '{"include":[{"kind":"images","size":10},{"kind":"fragmented","size":10}]}' || inputs.fixture_set == 'images-10' && '{"include":[{"kind":"images","size":10}]}' || inputs.fixture_set == 'fragmented-10' && '{"include":[{"kind":"fragmented","size":10}]}' || '{"include":[{"kind":"text","size":10},{"kind":"text","size":50},{"kind":"text","size":99},{"kind":"images","size":10},{"kind":"images","size":50},{"kind":"images","size":99},{"kind":"many-short","size":10},{"kind":"fragmented","size":10}]}') }}
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[benchmark]')
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+      matrix:
+        kind: [text, images]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -151,8 +148,16 @@ jobs:
         with:
           packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
-      - name: Prepare benchmark APKs
-        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Build both versions with the same benchmark harness
+        run: |
+          ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+          git fetch --depth=1 origin tag "$PREVIOUS_VERSION"
+          previous="$RUNNER_TEMP/benchmark-previous"
+          mkdir -p "$previous"
+          git archive "$PREVIOUS_VERSION" | tar -x -C "$previous"
+          test_source=app/src/androidTest/java/dev/huang/notify/BackupBenchmark.java
+          cp "$test_source" "$previous/$test_source"
+          "$previous/gradlew" -p "$previous" :app:assembleDebug :app:assembleDebugAndroidTest
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -165,13 +170,9 @@ jobs:
           profile: pixel_2
           disable-animations: true
           script: |
-            adb install app/build/outputs/apk/debug/app-debug.apk
-            adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-            timeout 45m adb shell am instrument -w -e phase benchmark -e benchmark_kind ${{ matrix.kind }} -e benchmark_size ${{ matrix.size }} dev.huang.notify.test/dev.huang.notify.UpgradeHarness | tee backup-performance.txt
-            adb exec-out run-as dev.huang.notify cat files/backup-performance.json > backup-performance.json
-            grep -q 'INSTRUMENTATION_CODE: -1' backup-performance.txt
+            bash .github/scripts/backup-capacity.sh ${{ matrix.kind }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: backup-performance-${{ matrix.kind }}-${{ matrix.size }}-api-35
-          path: backup-performance.*
+          name: backup-capacity-${{ matrix.kind }}-api-35
+          path: backup-results/

@@ -1,89 +1,237 @@
 package dev.huang.notify;
 
 import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Debug;
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
-import org.json.*;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Random;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
-/** Opt-in, synthetic-only paired benchmark; exact 1.2.0 archive/files/crypto implementations live in test sources. */
+/** Test-only fixture for measuring the installed version at its exact plaintext limit. */
 final class BackupBenchmark {
-  private static final char[] PASSWORD="benchmark-password-123".toCharArray();
-  private static final Uri TREE=Uri.parse("content://dev.huang.notify.testdocs/tree/root");
-  static void run(Context c,java.util.function.Consumer<String> progress)throws Exception{run(c,"",0,progress);}
-  static void run(Context c,String selectedKind,int selectedSize,java.util.function.Consumer<String> progress)throws Exception{
-    JSONArray cases=new JSONArray();JSONObject root=new JSONObject().put("app_version",BuildConfig.VERSION_NAME).put("api",android.os.Build.VERSION.SDK_INT)
-      .put("baseline_commit","527a0f18091d209fce11debee02d8d38be73ce18").put("warmups_per_mode",1).put("measured_runs_per_mode",5)
-      .put("destination","private debug DocumentsProvider; local disk; no picker time").put("memory","sampled Java used heap and process PSS every 100 ms; not device-wide memory").put("cases",cases);
-    File report=new File(c.getFilesDir(),"backup-performance.json");
-    write(report,root);
-    try{
-      for(String kind:new String[]{"text","images","many-short","fragmented"})for(int size:kind.equals("text")||kind.equals("images")?new int[]{10,50,99}:new int[]{10}){
-        if(!selectedKind.isEmpty()&&(!kind.equals(selectedKind)||size!=selectedSize))continue;
-        progress.accept("Preparing "+kind+" "+size);seed(c,kind,size);long[] counts=Store.IO.submit(()->Store.get(c).counts()).get();long dbBytes=c.getDatabasePath("notifications.db").length();
-        if(kind.equals("fragmented")&&dbBytes<80L*1024*1024)throw new AssertionError("Fragmented fixture did not retain a large physical database: "+dbBytes);
-        for(boolean encrypted:new boolean[]{false,true}){
-          JSONObject entry=new JSONObject().put("kind",kind).put("nominal_mib",size).put("encrypted",encrypted).put("records",counts[0]).put("database_bytes",dbBytes);JSONArray oldRuns=new JSONArray(),newRuns=new JSONArray();entry.put("old",oldRuns).put("new",newRuns);cases.put(entry);write(report,root);
-          JSONObject oldWarm=measure(c,true,encrypted),newWarm=measure(c,false,encrypted);entry.put("first_old",oldWarm).put("first_new",newWarm);
-          for(int trial=0;trial<5;trial++){
-            progress.accept(kind+" "+size+" MiB "+(encrypted?"encrypted":"plain")+" paired "+(trial+1)+"/5");
-            if(trial%2==0){oldRuns.put(measure(c,true,encrypted));newRuns.put(measure(c,false,encrypted));}else{newRuns.put(measure(c,false,encrypted));oldRuns.put(measure(c,true,encrypted));}
-            write(report,root);
-          }
-          double before=median(oldRuns),after=median(newRuns),improvement=100*(before-after)/before;entry.put("old_median_ms",before).put("new_median_ms",after).put("improvement_percent",improvement);
-          entry.put("target_met",size>=50&&encrypted?improvement>=30:after<=before*1.1);write(report,root);
+  private static final Uri TREE = Uri.parse("content://dev.huang.notify.testdocs/tree/root");
+  private static final char[] PASSWORD = "benchmark-password-123".toCharArray();
+  private static final int TRIALS = 5, NOTE_LIMIT = 100000;
+
+  static void run(Context context, String kind, int expectedMiB, java.util.function.Consumer<String> progress)
+      throws Exception {
+    if (!kind.equals("text") && !kind.equals("images")) throw new IllegalArgumentException("Unknown fixture");
+    long limit = BackupStreamCrypto.MAX_BYTES;
+    if (expectedMiB != 0 && expectedMiB * 1024L * 1024L != limit) {
+      throw new AssertionError("Installed version does not have the requested limit");
+    }
+    JSONObject report = new JSONObject().put("app_version", BuildConfig.VERSION_NAME)
+        .put("api", android.os.Build.VERSION.SDK_INT).put("device", android.os.Build.MODEL)
+        .put("abi", android.os.Build.SUPPORTED_ABIS[0]).put("limit_bytes", limit)
+        .put("kind", kind).put("warmups_per_mode", 1).put("measured_runs_per_mode", TRIALS)
+        .put("destination", "local debug DocumentsProvider").put("cases", new JSONArray());
+    try {
+      progress.accept("Preparing " + kind + " at " + limit + " bytes");
+      long[] counts = Store.IO.submit(() -> seed(context, kind, limit)).get();
+      report.put("records", counts[0]).put("images", counts[1]);
+      for (boolean encrypted : new boolean[]{false, true}) {
+        JSONArray runs = new JSONArray();
+        JSONObject mode = new JSONObject().put("encrypted", encrypted).put("runs", runs);
+        report.getJSONArray("cases").put(mode);
+        for (int trial = 0; trial <= TRIALS; trial++) {
+          progress.accept(BuildConfig.VERSION_NAME + " " + kind + " " + (encrypted ? "encrypted" : "plain")
+              + " trial " + trial + "/" + TRIALS);
+          JSONObject sample = measure(context, encrypted, limit, counts);
+          if (trial == 0) mode.put("warmup", sample);
+          else runs.put(sample);
         }
+        mode.put("export_median_ms", median(runs, "export_ms"))
+            .put("restore_median_ms", median(runs, "restore_ms"));
       }
-      if(cases.length()==0)throw new IllegalArgumentException("No benchmark case matched");root.put("completed",true);write(report,root);
-    }finally{Store.IO.submit(()->{Store s=Store.get(c);s.getWritableDatabase().delete("records",null,null);s.pruneImages();}).get();}
+      report.put("completed", true);
+    } finally {
+      try (OutputStream out = new FileOutputStream(new File(context.getFilesDir(), "backup-performance.json"))) {
+        out.write(report.toString(2).getBytes(StandardCharsets.UTF_8));
+      }
+    }
   }
-  private static void write(File report,JSONObject root)throws Exception{try(Writer w=new OutputStreamWriter(new FileOutputStream(report),java.nio.charset.StandardCharsets.UTF_8)){w.write(root.toString(2));}}
-  private static double median(JSONArray rows)throws Exception{double[] values=new double[rows.length()];for(int i=0;i<values.length;i++)values[i]=rows.getJSONObject(i).getDouble("total_ms");Arrays.sort(values);return values[values.length/2];}
-  private static final class Memory implements AutoCloseable{
-    final AtomicBoolean running=new AtomicBoolean(true);volatile long heap,pss,temp;final Thread thread;
-    Memory(File root){thread=new Thread(()->{while(running.get()){Runtime r=Runtime.getRuntime();heap=Math.max(heap,r.totalMemory()-r.freeMemory());pss=Math.max(pss,Debug.getPss()*1024L);temp=Math.max(temp,directoryBytes(root));try{Thread.sleep(100);}catch(InterruptedException e){return;}}},"backup-memory-sample");thread.setDaemon(true);thread.start();}
-    public void close()throws InterruptedException{running.set(false);thread.interrupt();thread.join(2000);}
-  }
-  private static JSONObject measure(Context c,boolean legacy,boolean encrypted)throws Exception{
-    return AutoBackup.IO.submit(()->{
-      BackupTask task=new BackupTask();long start=System.nanoTime(),prepared,size,temp,saveStart;Map<String,Long> phases;Map<String,Long> ioBefore=processIo();Memory memory=new Memory(new File(c.getCacheDir(),"backup-work"));
-      AutoBackup.Documents docs=new AutoBackup.Documents(c,TREE);String id=docs.create("benchmark_"+UUID.randomUUID()+(encrypted?".hnbk":".hnjson"));
-      try{
-        if(legacy){try(Legacy12BackupFiles.Session s=Legacy12BackupFiles.export(c,encrypted?PASSWORD:null,task)){prepared=System.nanoTime();size=s.ready.length();temp=directoryBytes(s.dir);saveStart=System.nanoTime();Legacy12BackupFiles.save(c,s,Uri.parse(id),task);phases=task.timingsMillis();}}
-        else {try(BackupFiles.Session s=BackupFiles.export(c,encrypted?PASSWORD:null,task)){prepared=System.nanoTime();size=s.ready.length();temp=directoryBytes(s.dir);saveStart=System.nanoTime();BackupFiles.save(c,s,Uri.parse(id),task);phases=task.timingsMillis();}}
-        long end=System.nanoTime();memory.close();return new JSONObject().put("total_ms",(end-start)/1000000.0).put("prepare_ms",(prepared-start)/1000000.0).put("save_verify_ms",(end-saveStart)/1000000.0)
-          .put("output_bytes",size).put("ready_temp_bytes",temp).put("sampled_java_heap_bytes",memory.heap).put("sampled_pss_bytes",memory.pss).put("sampled_temp_peak_bytes",memory.temp).put("process_io_delta",ioDelta(ioBefore,processIo())).put("phases_ms",new JSONObject(phases));
-      }finally{memory.close();docs.delete(id);}
-    }).get(10,TimeUnit.MINUTES);
-  }
-  private static Map<String,Long> processIo(){Map<String,Long> values=new LinkedHashMap<>();try(BufferedReader reader=new BufferedReader(new FileReader("/proc/self/io"))){String line;while((line=reader.readLine())!=null){String[] parts=line.split(":");if(parts.length==2&&Arrays.asList("rchar","wchar","read_bytes","write_bytes").contains(parts[0]))values.put(parts[0],Long.parseLong(parts[1].trim()));}}catch(Exception ignored){}return values;}
-  private static JSONObject ioDelta(Map<String,Long> before,Map<String,Long> after)throws Exception{JSONObject result=new JSONObject();for(String key:before.keySet())if(after.containsKey(key))result.put(key,after.get(key)-before.get(key));if(result.length()==0)result.put("unavailable",true);return result;}
-  private static long directoryBytes(File f){if(f.isFile())return f.length();long count=0;File[] children=f.listFiles();if(children!=null)for(File child:children)count+=directoryBytes(child);return count;}
-  private static String repeat(char ch,int n){char[] c=new char[n];Arrays.fill(c,ch);return new String(c);}
-  private static void checkpoint(Store s){try(android.database.Cursor c=s.getWritableDatabase().rawQuery("PRAGMA wal_checkpoint(TRUNCATE)",null)){c.moveToFirst();}}
-  private static void seed(Context c,String kind,int size)throws Exception{
-    Store.IO.submit(()->{
-      Store s=Store.get(c);android.database.sqlite.SQLiteDatabase db=s.getWritableDatabase();db.delete("records",null,null);db.delete("settings",null,null);s.pruneImages();checkpoint(s);
-      if(kind.equals("fragmented"))db.execSQL("PRAGMA auto_vacuum=NONE");db.execSQL("VACUUM");checkpoint(s);
-      String text=repeat('資',90000);int rows=kind.equals("fragmented")?193:size==10?19:size==50?97:193;
-      NotificationImages.Attachment shared=kind.equals("many-short")?ImageStoreTest.picture(0xff146c59):null;
-      db.beginTransaction();try{
-        if(kind.equals("images")){
-          long estimate=0,target=size*1024L*1024-400000;Random random=new Random(8130);int index=0;
-          while(estimate<target){Bitmap bitmap=Bitmap.createBitmap(320,240,Bitmap.Config.ARGB_8888);int[] pixels=new int[320*240];for(int i=0;i<pixels.length;i++)pixels[i]=0xff000000|random.nextInt(0x1000000);bitmap.setPixels(pixels,0,320,0,0,320,240);NotificationImages.Attachment image=NotificationImages.normalize(bitmap);bitmap.recycle();
-            long next=((image.data.length+2)/3)*4+1400;if(estimate+next>100L*1024*1024-300000)break;s.capture("image"+index,"benchmark.fixture","Fixture","圖片基準","synthetic",index,new NotificationImages.Result(Collections.singletonList(image),"saved"));estimate+=next;index++;
+
+  private static JSONObject measure(Context context, boolean encrypted, long limit, long[] counts) throws Exception {
+    AutoBackup.Documents docs = new AutoBackup.Documents(context, TREE);
+    String id = docs.create("ceiling-" + (encrypted ? "encrypted.hnbk" : "plain.hnjson"));
+    Uri uri = Uri.parse(id);
+    BackupTask export = new BackupTask();
+    File temp = new File(context.getCacheDir(), "backup-work");
+    long exportMs, bytes, exportTemp;
+    JSONObject exportPhases;
+    try {
+      try (Sampling memory = new Sampling(temp)) {
+        long start = System.nanoTime();
+        try (BackupFiles.Session session = BackupFiles.export(context, encrypted ? PASSWORD : null, export)) {
+          bytes = session.ready.length();
+          long expected = encrypted ? BackupStreamCrypto.MAX_FILE_BYTES : limit;
+          if (bytes != expected) throw new AssertionError("Expected exactly " + expected + " bytes, got " + bytes);
+          BackupFiles.save(context, session, uri, export);
+        }
+        exportMs = millis(start);
+        exportPhases = new JSONObject(export.timingsMillis());
+        exportTemp = memory.temp;
+      }
+      // Prepare an empty database outside the timer so this measures a real restore.
+      Store store = Store.get(context);
+      Store.IO.submit(() -> { reset(store); return null; }).get();
+      BackupTask restore = new BackupTask();
+      try (Sampling memory = new Sampling(temp)) {
+        long start = System.nanoTime();
+        try (BackupFiles.Session session = BackupFiles.read(context, uri, restore)) {
+          if (encrypted) BackupFiles.unlock(session, PASSWORD, restore);
+          if (session.stage.records != counts[0] || session.stage.images != counts[1]) {
+            throw new AssertionError("Archive counts changed");
           }
-        }else if(kind.equals("many-short")){
-          String body=repeat('x',160);for(int i=0;i<5000;i++)for(int v=0;v<3;v++)s.capture("short"+i,"benchmark.fixture","Fixture","Synthetic",body+v,i,new NotificationImages.Result(Collections.singletonList(shared),"saved"));
-        }else for(int i=0;i<rows;i++)s.capture("text"+i,"benchmark.fixture","Fixture","文字基準",text,i);
-        db.setTransactionSuccessful();
-      }finally{db.endTransaction();}checkpoint(s);
-      if(kind.equals("fragmented")){db.delete("records","nkey NOT IN (SELECT nkey FROM records ORDER BY nkey LIMIT 19)",null);s.pruneImages();checkpoint(s);}
-      return null;
-    }).get(5,TimeUnit.MINUTES);
+          int restored = Store.IO.submit(() -> store.restoreStage(session.stage, true, restore)).get()[0];
+          if (restored != counts[0]) throw new AssertionError("Restore lost records");
+        }
+        long restoreMs = millis(start);
+        JSONObject restorePhases = new JSONObject(restore.timingsMillis());
+        if (store.counts()[0] != counts[0] || store.imageUsage()[0] != counts[1]) {
+          throw new AssertionError("Restored database counts changed");
+        }
+        return new JSONObject().put("output_bytes", bytes).put("export_ms", exportMs).put("restore_ms", restoreMs)
+            .put("export_phases_ms", exportPhases).put("restore_phases_ms", restorePhases)
+            .put("export_temp_bytes", exportTemp).put("restore_temp_bytes", memory.temp)
+            .put("sampled_restore_pss_bytes", memory.pss);
+      }
+    } finally {
+      docs.delete(id);
+    }
+  }
+
+  private static void reset(Store store) {
+    SQLiteDatabase db = store.getWritableDatabase();
+    db.delete("records", null, null);
+    db.delete("settings", null, null);
+    store.pruneImages();
+    try (Cursor checkpoint = db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null)) { checkpoint.moveToFirst(); }
+    db.execSQL("VACUUM");
+  }
+
+
+  private static long[] seed(Context context, String kind, long limit) throws Exception {
+    Store store = Store.get(context);
+    reset(store);
+    SQLiteDatabase db = store.getWritableDatabase();
+    Random random = new Random(8130);
+    long estimate = 0;
+    int index = 0;
+    db.beginTransaction();
+    try {
+      if (kind.equals("images")) {
+        int width = 256, height = 240;
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        int[] pixels = new int[width * height];
+        try {
+          while (estimate < limit - 3 * 1024 * 1024) {
+            for (int p = 0; p < pixels.length; p++) pixels[p] = 0xff000000 | random.nextInt(0x1000000);
+            bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
+            NotificationImages.Attachment image = NotificationImages.normalize(bitmap);
+            if (image == null) throw new AssertionError("Image fixture could not be encoded");
+            store.capture("image-" + index, "benchmark.fixture", "Fixture", "Image", "Synthetic", index,
+                new NotificationImages.Result(Collections.singletonList(image), "saved"));
+            estimate += ((image.data.length + 2L) / 3) * 4 + 1200;
+            index++;
+          }
+        } finally {
+          bitmap.recycle();
+        }
+      } else {
+        String body = repeat('資', 90000);
+        int rows = (int) ((limit - 2 * 1024 * 1024) / 541000);
+        for (; index < rows; index++) store.capture("text-" + index, "benchmark.fixture", "Fixture", "Text", body, index);
+      }
+      db.setTransactionSuccessful();
+    } finally {
+      db.endTransaction();
+    }
+    // Fill the gap using real notes so the JSON is exactly at the version's byte limit.
+    long bytes = bytes(db);
+    if (bytes >= limit) throw new AssertionError("Fixture exceeded the target before adjustment");
+    int fillers = (int) ((limit - bytes + NOTE_LIMIT - 1) / NOTE_LIMIT);
+    String[] ids = new String[fillers];
+    try (Cursor cursor = db.rawQuery("SELECT id FROM records ORDER BY id DESC LIMIT " + fillers, null)) {
+      for (int i = 0; i < fillers; i++) {
+        if (!cursor.moveToNext()) throw new AssertionError("Not enough records for exact-size adjustment");
+        ids[i] = cursor.getString(0);
+      }
+    }
+    db.beginTransaction();
+    try {
+      for (String id : ids) {
+        int length = (int) Math.min(NOTE_LIMIT, limit - bytes);
+        store.note(id, repeat('n', length));
+        bytes += length;
+      }
+      db.setTransactionSuccessful();
+    } finally {
+      db.endTransaction();
+    }
+    if (bytes != limit || bytes(db) != limit) throw new AssertionError("Fixture is not exactly at the limit");
+    return new long[]{store.counts()[0], store.imageUsage()[0]};
+  }
+
+  private static long bytes(SQLiteDatabase db) throws Exception {
+    BackupTask count = new BackupTask();
+    BackupArchive.write(db, new OutputStream() {
+      @Override public void write(int value) {}
+      @Override public void write(byte[] bytes, int offset, int length) {}
+    }, count);
+    return count.done;
+  }
+
+  private static String repeat(char value, int count) {
+    char[] chars = new char[count];
+    Arrays.fill(chars, value);
+    return new String(chars);
+  }
+
+  private static long median(JSONArray values, String field) throws Exception {
+    long[] sorted = new long[values.length()];
+    for (int i = 0; i < sorted.length; i++) sorted[i] = values.getJSONObject(i).getLong(field);
+    Arrays.sort(sorted);
+    return sorted[sorted.length / 2];
+  }
+
+  private static long millis(long start) { return (System.nanoTime() - start) / 1_000_000; }
+
+  private static final class Sampling implements AutoCloseable {
+    volatile long temp, pss;
+    final Thread thread;
+
+    Sampling(File root) {
+      thread = new Thread(() -> {
+        while (!Thread.currentThread().isInterrupted()) {
+          temp = Math.max(temp, directoryBytes(root));
+          pss = Math.max(pss, Debug.getPss() * 1024L);
+          try { Thread.sleep(100); } catch (InterruptedException e) { return; }
+        }
+      }, "backup-sampling");
+      thread.start();
+    }
+
+    public void close() throws InterruptedException {
+      thread.interrupt();
+      thread.join();
+    }
+
+    private static long directoryBytes(File root) {
+      if (root.isFile()) return root.length();
+      File[] children = root.listFiles();
+      long bytes = 0;
+      if (children != null) for (File child : children) bytes += directoryBytes(child);
+      return bytes;
+    }
   }
 }

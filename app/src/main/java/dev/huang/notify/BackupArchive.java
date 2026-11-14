@@ -72,7 +72,7 @@ final class BackupArchive {
     long count;final BackupTask task;
     LimitedOutput(OutputStream out,BackupTask task){super(out);this.task=task;}
     public void write(int b)throws IOException{byte[] one={(byte)b};write(one,0,1);}
-    public void write(byte[] bytes,int offset,int length)throws IOException{task.check();if(count+length>BackupStreamCrypto.MAX_BYTES)throw invalid("備份超過 100 MiB，請先整理紀錄");out.write(bytes,offset,length);count+=length;task.progress(count);}
+    public void write(byte[] bytes,int offset,int length)throws IOException{task.check();if(count+length>BackupStreamCrypto.MAX_BYTES)throw invalid(BackupStreamCrypto.TOO_LARGE);out.write(bytes,offset,length);count+=length;task.progress(count);}
   }
   /** Limits the lexical size and depth before JsonReader can allocate a giant token. */
   static final class TokenReader extends FilterReader {
@@ -96,7 +96,7 @@ final class BackupArchive {
     public void close(){if(db.isOpen())db.close();}
   }
   static Stage read(File json,File database,BackupTask task)throws Exception {
-    if(json.length()>BackupStreamCrypto.MAX_BYTES)throw invalid("備份超過 100 MiB");
+    if(json.length()>BackupStreamCrypto.MAX_BYTES)throw invalid(BackupStreamCrypto.TOO_LARGE);
     Stage stage=new Stage(database);boolean success=false;task.phase("檢查備份",json.length());
     try {
     try(InputStream source=new BufferedInputStream(new FileInputStream(json));JsonReader r=new JsonReader(new TokenReader(new InputStreamReader(new FilterInputStream(source){long count;public int read(byte[] b,int o,int n)throws IOException{task.check();int got=super.read(b,o,n);if(got>0){count+=got;task.progress(count);}return got;}},StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT))))) {

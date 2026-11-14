@@ -43,7 +43,7 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
       if(phase.startsWith("interrupt-")){BackupProcessHarness.run(this,phase);return;}
       if(phase.equals("benchmark")) {
         BackupBenchmark.run(c,benchmarkKind,benchmarkSize,message->{Bundle status=new Bundle();status.putString("benchmark_progress",message);sendStatus(0,status);});
-        Bundle report=new Bundle();report.putString("benchmark","PASS: completed paired baseline/new benchmark");finish(Activity.RESULT_OK,report);return;
+        Bundle report=new Bundle();report.putString("benchmark","PASS: completed exact-capacity export and restore");finish(Activity.RESULT_OK,report);return;
       }
       if(phase.equals("before")) {
         c.getSharedPreferences("updates",0).edit().putBoolean("enabled",false).commit();
@@ -58,6 +58,9 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
           store.favorite(record.id,true); store.note(record.id,"upgrade-sentinel");
           store.putSetting("paused","1"); store.putSetting("retention","30");return null;
         }).get();
+        AutoBackup.prefs(c).edit().putString("tree", "content://dev.huang.notify.testdocs/tree/root")
+            .putString("owner", "upgrade-fixture").putInt("keep", 14)
+            .putLong("success", 1711111111000L).commit();
         File target=UpgradeManager.apk(c);
         try(ParcelFileDescriptor fd=getUiAutomation().executeShellCommand("cat /data/local/tmp/huangnotify-next.apk"); InputStream in=new FileInputStream(fd.getFileDescriptor()); OutputStream out=new FileOutputStream(target)) {
           byte[] buffer=new byte[16384]; int n; while((n=in.read(buffer))!=-1) out.write(buffer,0,n);
@@ -90,6 +93,9 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
       }
       require(phase.equals("after"),"Unknown harness phase");
       require(c.getPackageManager().getPackageInfo(c.getPackageName(),0).versionName.equals(BuildConfig.VERSION_NAME),"New APK was not installed");
+      require(AutoBackup.keep(c)==14 && AutoBackup.folder(c).getAuthority().equals("dev.huang.notify.testdocs"),
+          "Automatic backup configuration was lost");
+      require(BackupReceipt.latest(c).time==1711111111000L,"Previous backup success time was lost");
       Store.IO.submit(()->{
         Store store=Store.get(c); java.util.List<Record> records=store.list("",null,false,false,10);
         require(records.size()==1,"Record missing after upgrade"); Record r=records.get(0);
