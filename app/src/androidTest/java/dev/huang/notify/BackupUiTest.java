@@ -35,7 +35,8 @@ public class BackupUiTest extends ActivityInstrumentationTestCase2<MainActivity>
       getInstrumentation().runOnMainSync(()->main.backupScreen.chooseImport());getInstrumentation().waitForIdleSync();
       assertTrue("Document picker was not intercepted",monitor.getHits()>0);
       getInstrumentation().runOnMainSync(()->main.backupScreen.exportDialog());getInstrumentation().waitForIdleSync();
-      assertNotNull("Cancelled picker left backup busy",dialog());assertTrue(dialog().isShowing());assertNotNull(find(dialog().getWindow().getDecorView(),"建立備份"));
+    assertNotNull("Cancelled picker left backup busy",dialog());assertTrue(dialog().isShowing());assertNotNull(find(dialog().getWindow().getDecorView(),"建立備份"));
+    assertNotNull(findContaining(dialog().getWindow().getDecorView(), "2,000,000 筆更新歷程"));
     }
     finally{getInstrumentation().removeMonitor(monitor);}
   }
@@ -45,6 +46,9 @@ public class BackupUiTest extends ActivityInstrumentationTestCase2<MainActivity>
     getInstrumentation().runOnMainSync(()->AppDialog.dismissAll(main));java.lang.reflect.Method storage=MainActivity.class.getDeclaredMethod("storageDialog");storage.setAccessible(true);
     getInstrumentation().runOnMainSync(()->{try{storage.invoke(main);}catch(Exception e){throw new RuntimeException(e);}});Store.IO.submit(()->{}).get();getInstrumentation().waitForIdleSync();
     assertNotNull(find(dialog().getWindow().getDecorView(),"儲存概況"));
+    for (String label : new String[]{"資料庫總用量", "通知與備註", "更新歷程", "圖片", "其他資料庫用量"}) {
+      assertNotNull(label, find(dialog().getWindow().getDecorView(), label));
+    }
     assertNotNull(findContaining(dialog().getWindow().getDecorView(),"含每則通知的初次記錄"));
     capture("image-storage.png");
     getInstrumentation().runOnMainSync(()->dialogUnchecked().getButton(AppDialog.BUTTON_NEUTRAL).performClick());getInstrumentation().waitForIdleSync();

@@ -12,7 +12,7 @@ on:
 permissions:
   contents: read
 env:
-  PREVIOUS_VERSION: v1.6.1
+  PREVIOUS_VERSION: v1.6.2
 jobs:
   build:
     if: "inputs.benchmark_only != true && !contains(github.event.head_commit.message, '[performance-only]')"

@@ -458,7 +458,7 @@ public final class Store extends SQLiteOpenHelper {
           bytesEstimate += o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
           if (bytesEstimate > BackupCrypto.MAX_BYTES
               || rows.length() >= 100000
-              || totalVersions > 200000) throw new IllegalArgumentException("備份資料超過 20 MB 或筆數上限，請先整理紀錄");
+              || totalVersions > BackupArchive.MAX_VERSIONS) throw new IllegalArgumentException("備份資料超過 20 MB 或筆數上限，請先整理紀錄");
           rows.put(o);
         }
       }
@@ -639,12 +639,52 @@ public final class Store extends SQLiteOpenHelper {
     } finally {db.endTransaction();}
   }
   long[] imageUsage() {try(Cursor c=getReadableDatabase().rawQuery("SELECT COUNT(*),COALESCE(SUM(length(data)),0) FROM images WHERE EXISTS(SELECT 1 FROM record_images r WHERE r.image_hash=images.hash) OR EXISTS(SELECT 1 FROM version_images v WHERE v.image_hash=images.hash)",null)){c.moveToFirst();return new long[]{c.getLong(0),c.getLong(1)};}}
-  long historyCount() {
-    try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM versions", null)) {
-      c.moveToFirst();
-      return c.getLong(0);
+
+  long databaseBytes() {
+    String path = databaseFile.getPath();
+    return databaseFile.length() + new java.io.File(path + "-wal").length()
+        + new java.io.File(path + "-shm").length();
+  }
+
+  static final class StorageUsage {
+    final long totalBytes, notificationBytes, historyBytes, historyCount, imageBytes, imageCount;
+
+    StorageUsage(long totalBytes, long notificationBytes, long historyBytes, long historyCount,
+        long imageBytes, long imageCount) {
+      this.totalBytes = totalBytes;
+      this.notificationBytes = notificationBytes;
+      this.historyBytes = historyBytes;
+      this.historyCount = historyCount;
+      this.imageBytes = imageBytes;
+      this.imageCount = imageCount;
+    }
+
+    long otherBytes() {
+      return Math.max(0, totalBytes - notificationBytes - historyBytes - imageBytes);
     }
   }
+
+  StorageUsage storageUsage() {
+    SQLiteDatabase db = getReadableDatabase();
+    long notificationBytes;
+    // These columns contain text; casting to BLOB counts bytes, including multibyte characters.
+    try (Cursor notifications = db.rawQuery("SELECT COALESCE(SUM(length(CAST(id AS BLOB))"
+        + " + length(CAST(nkey AS BLOB)) + length(CAST(pkg AS BLOB)) + length(CAST(app AS BLOB))"
+        + " + length(CAST(title AS BLOB)) + length(CAST(body AS BLOB)) + length(CAST(note AS BLOB))"
+        + " + length(CAST(hash AS BLOB)) + length(CAST(image_status AS BLOB))),0) FROM records", null)) {
+      notifications.moveToFirst();
+      notificationBytes = notifications.getLong(0);
+    }
+    try (Cursor history = db.rawQuery("SELECT COUNT(*), COALESCE(SUM(length(CAST(id AS BLOB))"
+        + " + length(CAST(record_id AS BLOB)) + length(CAST(title AS BLOB)) + length(CAST(body AS BLOB))"
+        + " + length(CAST(hash AS BLOB)) + length(CAST(image_status AS BLOB))),0) FROM versions", null)) {
+      history.moveToFirst();
+      long[] images = imageUsage();
+      return new StorageUsage(databaseBytes(), notificationBytes, history.getLong(1), history.getLong(0),
+          images[1], images[0]);
+    }
+  }
+
   long[] imageCleanupPreview(boolean includeFavorites){
     SQLiteDatabase db=getReadableDatabase();String target=includeFavorites?"1=1":"r.favorite=0";
     long count;try(Cursor c=db.rawQuery("SELECT COUNT(*) FROM records r WHERE "+target+" AND (EXISTS(SELECT 1 FROM record_images i WHERE i.record_id=r.id) OR EXISTS(SELECT 1 FROM versions v JOIN version_images i ON i.version_id=v.id WHERE v.record_id=r.id))",null)){c.moveToFirst();count=c.getLong(0);}

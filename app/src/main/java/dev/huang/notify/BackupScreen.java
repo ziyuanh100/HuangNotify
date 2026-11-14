@@ -80,7 +80,9 @@ final class BackupScreen implements BackupOperation.Observer {
   }
   void exportDialog(){
     if(BackupOperation.busy()){toast("已有備份作業進行中");update();return;}
-    LinearLayout b=body();b.addView(u.text("包含所有通知、圖片、歷程、收藏與備註。單份上限 "+BackupStreamCrypto.MAX_MIB+" MiB，超過 100 MiB 的檔案需使用 1.6.0 以上版本還原。",14,u.muted,false));
+    LinearLayout b=body();b.addView(u.text("包含所有通知、圖片、歷程、收藏與備註。單份上限 "
+        + BackupStreamCrypto.MAX_MIB + " MiB，最多 " + BackupArchive.VERSION_LIMIT
+        + "更新歷程。超過 100 MiB 的檔案需使用 1.6.0 以上版本還原。",14,u.muted,false));
     EditText password=password("備份密碼（至少 8 個字元）"),confirm=password("再次輸入密碼");u.gap(b,12);b.addView(password);u.gap(b,8);b.addView(confirm);
     AppDialog dialog=new AppDialog.Builder(activity).setTitle("建立備份").setView(b).setNegativeButton("取消",null)
       .setNeutralButton("不加密",(d,w)->new AppDialog.Builder(activity).setTitle("匯出未加密備份？").setMessage("取得檔案的人可閱讀文字及圖片，請妥善保管。").setNegativeButton("取消",null).setPositiveButton("匯出",(dd,ww)->prepareExport(null)).show()).setPositiveButton("加密匯出",null).create();

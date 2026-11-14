@@ -889,7 +889,7 @@ public final class MainActivity extends Activity {
         String savedPaused = store.setting("paused", "0");
         String savedRetention = store.setting("retention", "0");
         String savedTime = store.setting("last_saved", "0");
-        String size = settings ? databaseSize() : "";
+        String size = settings ? formatSize(store.databaseBytes()) : "";
         runOnUiThread(() -> {
           refreshing = false;
           if (isDestroyed()) return;
@@ -1298,8 +1298,8 @@ public final class MainActivity extends Activity {
     recent.addView(lastBackup);
 
     LinearLayout operations = settingGroup(body, "手動備份");
-    settingRow(operations, "建立備份", "匯出全部紀錄 · 單份上限 " + BackupStreamCrypto.MAX_MIB + " MiB",
-        "backup", backupScreen::exportDialog);
+    settingRow(operations, "建立備份", "單份上限 " + BackupStreamCrypto.MAX_MIB + " MiB · "
+        + BackupArchive.VERSION_LIMIT + "歷程", "backup", backupScreen::exportDialog);
     settingRow(operations, "還原備份", "先預覽檔案，再合併匯入", "check", backupScreen::chooseImport);
 
     LinearLayout automatic = settingGroup(body, "自動加密備份");
@@ -1662,23 +1662,61 @@ public final class MainActivity extends Activity {
     });
   }
 
-  private String databaseSize() {
-    java.io.File db = getDatabasePath("notifications.db");
-    long size =
-        db.length()
-            + new java.io.File(db.getPath() + "-wal").length()
-            + new java.io.File(db.getPath() + "-shm").length();
+  private String formatSize(long size) {
     return android.text.format.Formatter.formatFileSize(this, size);
   }
 
   private void storageDialog() {
-    Store.IO.execute(()->{try{Store store=Store.get(this);long[] usage=store.imageUsage();long history=store.historyCount();runOnUiThread(()->{
-      if(isDestroyed())return;
-      StringBuilder text=new StringBuilder("目前保存 "+format(counts[0])+" 則\n今日新增 "+format(counts[1])+" 則\n收藏 "+format(counts[2])+" 則\n更新歷程 "+format(history)+" 筆（含每則通知的初次記錄）\n資料庫大小 "+databaseSize()+"\n圖片 "+usage[0]+" 張（共用圖片只計一次） · "+android.text.format.Formatter.formatFileSize(this,usage[1])+"\n\n各 App 保存數量\n");
-      for(String[] app:apps)text.append(app[1]).append("：").append(app[2]).append(" 則\n");
-      text.append("\n通知更新另存為歷程。清除圖片會保留文字、歷程、收藏與備註；已釋出的資料庫空間可再次使用，檔案大小不一定立即縮小。");
-      new AppDialog.Builder(this).setTitle("儲存概況").setMessage(text.toString()).setPositiveButton("完成",null).setNeutralButton("清除已保存圖片",(d,w)->clearImagesDialog()).show();
-    });}catch(Exception e){runOnUiThread(()->toast("無法讀取圖片用量"));}});
+    Store.IO.execute(() -> {
+      try {
+        Store store = Store.get(this);
+        Store.StorageUsage usage = store.storageUsage();
+        long[] totals = store.counts();
+        List<String[]> sources = store.apps();
+        runOnUiThread(() -> {
+          if (isFinishing() || isDestroyed()) return;
+          LinearLayout body = u.column();
+          addStorageRow(body, "資料庫總用量", usage.totalBytes,
+              "分類用量為估算");
+          addStorageRow(body, "通知與備註", usage.notificationBytes,
+              format(totals[0]) + " 則通知 · 今日新增 " + format(totals[1]) + " 則 · 收藏 " + format(totals[2]) + " 則");
+          addStorageRow(body, "更新歷程", usage.historyBytes,
+              format(usage.historyCount) + " 筆（含每則通知的初次記錄）");
+          addStorageRow(body, "圖片", usage.imageBytes, format(usage.imageCount) + " 張（相同圖片只計一次）");
+          addStorageRow(body, "其他資料庫用量", usage.otherBytes(), "含索引、時間欄位、日誌與可重用空間");
+          if (!sources.isEmpty()) {
+            TextView heading = u.text("各 App 保存數量", 15, u.ink, true);
+            u.heading(heading);
+            body.addView(heading);
+            StringBuilder sourceCounts = new StringBuilder();
+            for (String[] source : sources) {
+              if (sourceCounts.length() > 0) sourceCounts.append('\n');
+              sourceCounts.append(source[1]).append(" · ").append(source[2]).append(" 則");
+            }
+            TextView sourceUsage = u.text(sourceCounts.toString(), 14, u.muted, false);
+            sourceUsage.setLineSpacing(u.d(4), 1f);
+            body.addView(sourceUsage);
+          }
+          new AppDialog.Builder(this).setTitle("儲存概況").setView(body)
+              .setPositiveButton("完成", null)
+              .setNeutralButton("清除已保存圖片", (dialog, button) -> clearImagesDialog()).show();
+        });
+      } catch (Exception error) {
+        runOnUiThread(() -> toast("無法讀取儲存用量"));
+      }
+    });
+  }
+
+  private void addStorageRow(LinearLayout body, String label, long bytes, String detail) {
+    LinearLayout row = u.row();
+    row.addView(u.text(label, 15, u.ink, true), new LinearLayout.LayoutParams(0, -2, 1));
+    TextView size = u.text(formatSize(bytes), 15, u.ink, true);
+    LinearLayout.LayoutParams sizeParams = new LinearLayout.LayoutParams(-2, -2);
+    sizeParams.setMarginStart(u.d(8));
+    row.addView(size, sizeParams);
+    body.addView(row);
+    body.addView(u.text(detail, 13, u.muted, false));
+    u.gap(body, 12);
   }
   private void clearImagesDialog(){ImageCleanupScreen.show(this,u,this::refresh);}
 
