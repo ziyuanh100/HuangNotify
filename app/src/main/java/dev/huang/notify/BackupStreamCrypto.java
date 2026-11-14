@@ -35,7 +35,7 @@ public final class BackupStreamCrypto {
   /** Push-based HNBK2 writer. flush never creates short frames; finish authenticates the terminal. */
   static final class Encoder extends OutputStream {
     final DataOutputStream out;final AtomicBoolean cancelled;final Progress progress;
-    final byte[] header,key,buffer=new byte[CHUNK];final Cipher cipher;
+    final byte[] header,key,buffer=new byte[CHUNK], encrypted=new byte[CHUNK+16];final Cipher cipher;
     long total;int used,index;boolean closed;
     Encoder(OutputStream destination,char[] password,AtomicBoolean cancelled,Progress progress)throws Exception{
       if(password.length<8)throw new BackupProblem("備份密碼至少需要 8 個字元");check(cancelled);
@@ -48,14 +48,33 @@ public final class BackupStreamCrypto {
     public void write(byte[] bytes,int offset,int length)throws IOException{
       if(closed)throw new IOException("備份輸出已關閉");if(offset<0||length<0||offset>bytes.length-length)throw new IndexOutOfBoundsException();
       check(cancelled);if(total+used+length>MAX_BYTES)throw new BackupProblem(TOO_LARGE);
-      while(length>0){check(cancelled);int n=Math.min(CHUNK-used,length);System.arraycopy(bytes,offset,buffer,used,n);used+=n;offset+=n;length-=n;if(used==CHUNK)emit();}
+      while(length>0){
+        if(used==0&&length>=CHUNK){
+          emit(bytes,offset,CHUNK);
+          offset+=CHUNK;
+          length-=CHUNK;
+        }else{
+          int n=Math.min(CHUNK-used,length);
+          System.arraycopy(bytes,offset,buffer,used,n);
+          used+=n;offset+=n;length-=n;
+          if(used==CHUNK){emit(buffer,0,used);used=0;}
+        }
+      }
     }
-    private void emit()throws IOException{
-      try{check(cancelled);out.writeInt(used);out.write(frame(cipher,Cipher.ENCRYPT_MODE,key,header,index++,used,total).doFinal(buffer,0,used));total+=used;used=0;progress.update(total);}
+    private void emit(byte[] input,int offset,int size)throws IOException{
+      try{
+        check(cancelled);
+        int written=frame(cipher,Cipher.ENCRYPT_MODE,key,header,index++,size,total)
+            .doFinal(input,offset,size,encrypted,0);
+        out.writeInt(size);
+        out.write(encrypted,0,written);
+        total+=size;
+        progress.update(total);
+      }
       catch(IOException e){throw e;}catch(Exception e){throw new IOException("無法加密備份",e);}
     }
     public void flush()throws IOException{check(cancelled);out.flush();}
-    public void close()throws IOException{if(closed)return;try{check(cancelled);if(used>0)emit();emit();out.flush();}finally{closed=true;Arrays.fill(key,(byte)0);Arrays.fill(buffer,(byte)0);}}
+    public void close()throws IOException{if(closed)return;try{check(cancelled);if(used>0)emit(buffer,0,used);emit(buffer,0,0);out.flush();}finally{closed=true;Arrays.fill(key,(byte)0);Arrays.fill(buffer,(byte)0);}}
   }
   public static void encrypt(InputStream in,OutputStream output,char[] password,AtomicBoolean cancelled,Progress progress) throws Exception {
     try(Encoder writer=new Encoder(output,password,cancelled,progress)){
@@ -67,18 +86,19 @@ public final class BackupStreamCrypto {
     DataInputStream in=new DataInputStream(input);byte[] header=new byte[HEADER];in.readFully(header);
     if(!encrypted(header)||ByteBuffer.wrap(header,5,4).getInt()!=ITERATIONS)throw new BackupProblem("不支援的加密版本或參數");
     check(cancelled);byte[] key=key(password,Arrays.copyOfRange(header,9,25));long total=0;int index=0;
+    byte[] encrypted=new byte[CHUNK+16], clear=new byte[CHUNK];
     try {
       Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");
       while(true) {
         check(cancelled);int size=in.readInt();
         if(total+size>MAX_BYTES)throw new BackupProblem(TOO_LARGE);
         if(size<0 || size>CHUNK || index>MAX_BYTES/CHUNK+1)throw new BackupProblem("加密備份區塊格式錯誤");
-        byte[] encrypted=new byte[size+16];in.readFully(encrypted);byte[] clear=frame(cipher,Cipher.DECRYPT_MODE,key,header,index++,size,total).doFinal(encrypted);
-        try {
-          if(size==0) {if(in.read()!=-1)throw new BackupProblem("備份末尾含多餘資料");check(cancelled);out.flush();return;}
-          out.write(clear);total+=size;progress.update(total);
-        } finally {Arrays.fill(clear,(byte)0);}
+        in.readFully(encrypted,0,size+16);
+        int written=frame(cipher,Cipher.DECRYPT_MODE,key,header,index++,size,total)
+            .doFinal(encrypted,0,size+16,clear,0);
+        if(size==0) {if(in.read()!=-1)throw new BackupProblem("備份末尾含多餘資料");check(cancelled);out.flush();return;}
+        out.write(clear,0,written);total+=size;progress.update(total);
       }
-    } finally {Arrays.fill(key,(byte)0);}
+    } finally {Arrays.fill(key,(byte)0);Arrays.fill(clear,(byte)0);}
   }
 }

@@ -4,7 +4,6 @@ import android.content.ContentValues;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.util.JsonReader;
-import android.util.JsonWriter;
 import android.util.JsonToken;
 import java.io.*;
 import java.nio.charset.*;
@@ -20,52 +19,160 @@ final class BackupArchive {
     List<String> result=new ArrayList<>();
     try(Cursor c=db.rawQuery("SELECT image_hash FROM "+table+" WHERE "+column+"=? ORDER BY position",new String[]{id})){while(c.moveToNext())result.add(c.getString(0));}return result;
   }
-  private static String text(Cursor c,String name){return c.getString(c.getColumnIndexOrThrow(name));}
-  private static long number(Cursor c,String name){return c.getLong(c.getColumnIndexOrThrow(name));}
-  private static void imageFields(JsonWriter w,String status,List<String> refs) throws IOException {
-    w.name("image_status").value(status).name("images").beginArray();for(String hash:refs)w.value(hash);w.endArray();
+  private static final String[] VERSION_TEXT = {"id", "title", "body"};
+  private static final String VERSION_TABLE = "versions INDEXED BY versions_record";
+  private static final String VERSION_ORDER = " ORDER BY record_id DESC,time DESC,rowid DESC";
+  private static final String VERSION_PAGE = " WHERE (record_id,time,rowid)<(?,?,?)";
+  // CursorWindow refills can restart a SQLite statement. Each page starts at its last key.
+  private static final int PAGE_SIZE = 32;
+  private static final String PAGE = " LIMIT " + PAGE_SIZE;
+
+  private static void imageFields(BackupJsonWriter writer, String status, List<String> refs) throws IOException {
+    writer.name("image_status").value(status).name("images").beginArray();
+    for (String hash : refs) writer.value(hash);
+    writer.endArray();
   }
-  static void write(SQLiteDatabase db,OutputStream destination,BackupTask task) throws Exception {
-    task.phase(task.encryptedExport?"建立與加密備份":"建立備份",0);int records=0,versions=0,images=0;
-    try(JsonWriter w=new JsonWriter(new BufferedWriter(new OutputStreamWriter(new LimitedOutput(destination,task),StandardCharsets.UTF_8),64*1024))) {
-      w.beginObject().name("format").value("HuangNotify").name("version").value(3).name("created").value(System.currentTimeMillis());
-      w.name("records").beginArray();
-      // Four ordered cursors replace per-record/per-version queries; rows remain bounded in CursorWindow.
-      try(Cursor c=db.rawQuery("SELECT * FROM records ORDER BY id DESC",null);
-          Cursor v=db.rawQuery("SELECT * FROM versions INDEXED BY versions_record ORDER BY record_id DESC,time DESC,rowid DESC",null);
-          Links current=new Links(db.rawQuery("SELECT record_id,image_hash FROM record_images ORDER BY record_id DESC,position",null));
-          Links history=new Links(db.rawQuery("SELECT vi.version_id,vi.image_hash FROM versions v INDEXED BY versions_record CROSS JOIN version_images vi ON vi.version_id=v.id ORDER BY v.record_id DESC,v.time DESC,v.rowid DESC,vi.position",null))) {
-        boolean more=v.moveToFirst();
-        while(c.moveToNext()) {
-          task.check();if(++records>MAX_RECORDS)throw invalid("通知筆數超過上限");w.beginObject();String id=text(c,"id");
-          for(String name:TEXT)w.name(name).value(text(c,name));for(String name:TIMES)w.name(name).value(number(c,name));
-          imageFields(w,text(c,"image_status"),current.take(id));w.name("versions").beginArray();
-          while(more&&id.equals(text(v,"record_id"))) {
-            task.check();if(++versions>MAX_VERSIONS)throw invalid("更新歷程超過上限");w.beginObject();
-            for(String name:new String[]{"id","title","body"})w.name(name).value(text(v,name));w.name("time").value(number(v,"time"));
-            imageFields(w,text(v,"image_status"),history.take(text(v,"id")));w.endObject();more=v.moveToNext();
-          }
-          w.endArray().endObject();
+
+  static void write(SQLiteDatabase db, OutputStream destination, BackupTask task) throws Exception {
+    task.phase(task.encryptedExport ? "建立與加密備份" : "建立備份", 0);
+    try (BackupJsonWriter writer = new BackupJsonWriter(new LimitedOutput(destination, task))) {
+      writer.beginObject().name("format").value("HuangNotify").name("version").value(3)
+          .name("created").value(System.currentTimeMillis()).name("records").beginArray();
+      writeRecords(db, writer, task);
+      writer.endArray().name("images").beginArray();
+      writeImages(db, writer, task);
+      writer.endArray().name("settings").beginObject();
+      try (Cursor settings = db.rawQuery(
+          "SELECT name,value FROM settings WHERE name='retention' OR name='save_images' OR name LIKE 'exclude:%'", null)) {
+        while (settings.moveToNext()) {
+          task.check();
+          writer.name(settings.getString(0)).value(settings.getString(1));
         }
       }
-      w.endArray().name("images").beginArray();
-      try(Cursor c=db.rawQuery("SELECT * FROM images i WHERE EXISTS(SELECT 1 FROM record_images r WHERE r.image_hash=i.hash) OR EXISTS(SELECT 1 FROM version_images v WHERE v.image_hash=i.hash)",null)) {
-        while(c.moveToNext()) {
-          task.check();if(++images>MAX_IMAGES)throw invalid("圖片筆數超過上限");byte[] data=c.getBlob(c.getColumnIndexOrThrow("data"));
-          w.beginObject().name("sha256").value(text(c,"hash")).name("mime").value("image/png").name("width").value(number(c,"width")).name("height").value(number(c,"height")).name("data").value(Base64.getEncoder().encodeToString(data)).endObject();
-        }
-      }
-      w.endArray().name("settings").beginObject();
-      try(Cursor c=db.rawQuery("SELECT name,value FROM settings WHERE name='retention' OR name='save_images' OR name LIKE 'exclude:%'",null)) {
-        while(c.moveToNext()){task.check();w.name(c.getString(0)).value(c.getString(1));}
-      }
-      task.check();w.endObject().endObject();w.flush();
+      task.check();
+      writer.endObject().endObject();
     }
   }
-  private static final class Links implements AutoCloseable{
-    final Cursor cursor;boolean more;Links(Cursor c){cursor=c;more=c.moveToFirst();}
-    List<String> take(String id){List<String> refs=new ArrayList<>();while(more&&id.equals(cursor.getString(0))){refs.add(cursor.getString(1));more=cursor.moveToNext();}return refs;}
-    public void close(){cursor.close();}
+
+  private static void writeRecords(SQLiteDatabase db, BackupJsonWriter writer, BackupTask task) throws Exception {
+    int records = 0, versions = 0;
+    String[] before = null;
+    try (VersionPages history = new VersionPages(db);
+        Links currentImages = new Links(db.rawQuery(
+            "SELECT record_id,image_hash FROM record_images ORDER BY record_id DESC,position", null));
+        Links historyImages = new Links(db.rawQuery(
+            "SELECT vi.version_id,vi.image_hash FROM versions v INDEXED BY versions_record"
+                + " CROSS JOIN version_images vi ON vi.version_id=v.id"
+                + " ORDER BY v.record_id DESC,v.time DESC,v.rowid DESC,vi.position", null))) {
+      boolean more = history.advance();
+      int pageSize;
+      do {
+        pageSize = 0;
+        try (Cursor record = db.rawQuery(
+            "SELECT id,nkey,pkg,app,title,body,note,posted,first_seen,updated,removed,reason,favorite,image_status"
+                + " FROM records" + (before == null ? "" : " WHERE id<?") + " ORDER BY id DESC" + PAGE, before)) {
+          while (record.moveToNext()) {
+            task.check();
+            if (++records > MAX_RECORDS) throw invalid("通知筆數超過上限");
+            pageSize++;
+            String id = record.getString(0);
+            before = new String[]{id};
+            writer.beginObject().name(TEXT[0]).value(id);
+            for (int i = 1; i < TEXT.length; i++) writer.name(TEXT[i]).value(record.getString(i));
+            for (int i = 0; i < TIMES.length; i++) writer.name(TIMES[i]).value(record.getLong(TEXT.length + i));
+            imageFields(writer, record.getString(TEXT.length + TIMES.length), currentImages.take(id));
+            writer.name("versions").beginArray();
+            while (more && id.equals(history.recordId)) {
+              task.check();
+              if (++versions > MAX_VERSIONS) throw invalid("更新歷程超過上限");
+              Cursor version = history.cursor;
+              String versionId = version.getString(3);
+              writer.beginObject().name(VERSION_TEXT[0]).value(versionId);
+              for (int i = 1; i < VERSION_TEXT.length; i++) writer.name(VERSION_TEXT[i]).value(version.getString(3 + i));
+              writer.name("time").value(version.getLong(1));
+              imageFields(writer, version.getString(6), historyImages.take(versionId));
+              writer.endObject();
+              more = history.advance();
+            }
+            writer.endArray().endObject();
+          }
+        }
+      } while (pageSize == PAGE_SIZE);
+    }
+  }
+
+  private static final class VersionPages implements AutoCloseable {
+    final SQLiteDatabase db;
+    Cursor cursor;
+    String recordId;
+    private String[] before;
+    private int pageSize;
+
+    VersionPages(SQLiteDatabase db) { this.db = db; }
+
+    boolean advance() {
+      if (cursor == null) openPage();
+      if (!cursor.moveToNext()) {
+        if (pageSize < PAGE_SIZE) return false;
+        close();
+        openPage();
+        if (!cursor.moveToNext()) return false;
+      }
+      pageSize++;
+      recordId = cursor.getString(0);
+      before = new String[]{recordId, Long.toString(cursor.getLong(1)), Long.toString(cursor.getLong(2))};
+      return true;
+    }
+
+    private void openPage() {
+      pageSize = 0;
+      cursor = db.rawQuery("SELECT record_id,time,rowid,id,title,body,image_status FROM " + VERSION_TABLE
+          + (before == null ? "" : VERSION_PAGE) + VERSION_ORDER + PAGE, before);
+    }
+
+    @Override public void close() {
+      if (cursor != null) cursor.close();
+    }
+  }
+
+  private static void writeImages(SQLiteDatabase db, BackupJsonWriter writer, BackupTask task) throws Exception {
+    int images = 0, pageSize;
+    String[] after = null;
+    do {
+      pageSize = 0;
+      try (Cursor image = db.rawQuery(
+          "SELECT rowid,hash,width,height,data FROM images i WHERE "
+              + (after == null ? "" : "rowid>? AND ")
+              + "(EXISTS(SELECT 1 FROM record_images r WHERE r.image_hash=i.hash)"
+              + " OR EXISTS(SELECT 1 FROM version_images v WHERE v.image_hash=i.hash)) ORDER BY rowid" + PAGE,
+          after)) {
+        while (image.moveToNext()) {
+          task.check();
+          if (++images > MAX_IMAGES) throw invalid("圖片筆數超過上限");
+          pageSize++;
+          after = new String[]{Long.toString(image.getLong(0))};
+          writer.beginObject().name("sha256").value(image.getString(1)).name("mime").value("image/png")
+              .name("width").value(image.getLong(2)).name("height").value(image.getLong(3)).name("data");
+          writer.image(image.getBlob(4));
+          writer.endObject();
+        }
+      }
+    } while (pageSize == PAGE_SIZE);
+  }
+
+  private static final class Links implements AutoCloseable {
+    final Cursor cursor;
+    boolean more;
+    Links(Cursor cursor) { this.cursor = cursor; more = cursor.moveToFirst(); }
+    List<String> take(String id) {
+      List<String> result = new ArrayList<>();
+      while (more && id.equals(cursor.getString(0))) {
+        result.add(cursor.getString(1));
+        more = cursor.moveToNext();
+      }
+      return result;
+    }
+    @Override public void close() { cursor.close(); }
   }
   private static IllegalArgumentException invalid(String message){return new BackupProblem(message);}
   static final class LimitedOutput extends FilterOutputStream {
