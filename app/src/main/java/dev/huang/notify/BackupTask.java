@@ -4,6 +4,7 @@ import java.io.InterruptedIOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class BackupTask {
+  static final String SAVE="儲存備份", VERIFY="驗證已儲存的備份", PRUNE="整理舊備份";
   final AtomicBoolean cancelled;
   final long started=System.nanoTime();private long phaseStarted=started,pausedAt,excluded;
   private final java.util.Map<String,Long> durations=new java.util.LinkedHashMap<>();
@@ -19,4 +20,10 @@ final class BackupTask {
   synchronized java.util.Map<String,Long> timingsMillis(){java.util.Map<String,Long> result=new java.util.LinkedHashMap<>();for(java.util.Map.Entry<String,Long> e:durations.entrySet())result.put(e.getKey(),e.getValue()/1000000);result.put(phase,result.getOrDefault(phase,0L)+(System.nanoTime()-phaseStarted)/1000000);return result;}
   void progress(long count){done=count;}
   String status(){return (cancelled.get()?"正在取消，等待目前讀寫結束":phase)+" · "+(elapsedMillis()/1000)+" 秒"+(done>0?" · 已處理 "+String.format(java.util.Locale.TAIWAN,"%.1f",done/(1024f*1024f))+" MiB":"");}
+  String exportStep(){
+    if(PRUNE.equals(phase))return PRUNE;
+    if(VERIFY.equals(phase))return "3/3 驗證備份";
+    if(SAVE.equals(phase))return "2/3 儲存檔案";
+    return "1/3 建立備份";
+  }
 }

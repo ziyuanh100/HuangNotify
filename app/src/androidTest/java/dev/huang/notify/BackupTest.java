@@ -86,6 +86,13 @@ public class BackupTest extends AndroidTestCase {
       CountDownLatch latch=new CountDownLatch(1);
       AutoBackup.run(c,true,new AtomicBoolean(),message->latch.countDown()); assertTrue(latch.await(30,TimeUnit.SECONDS));
       assertTrue(AutoBackup.prefs(c).getLong("success",0)>0); assertEquals("",AutoBackup.prefs(c).getString("error",""));
+      BackupReceipt receipt = BackupReceipt.latest(c);
+      assertTrue(receipt.automatic);
+      assertTrue(receipt.bytes > 0);
+      assertFalse(receipt.location.isEmpty());
+      AutoBackup.setKeep(c, 14);
+      assertEquals(14, AutoBackup.keep(c));
+      assertEquals(receipt.time, BackupReceipt.latest(c).time);
       AutoBackup.Documents docs=new AutoBackup.Documents(c,tree); boolean found=false;
       for(String id:docs.files().keySet()) {
         try(BackupFiles.Session session=BackupFiles.read(c,Uri.parse(id),new BackupTask())) {

@@ -18,9 +18,9 @@ public class BackupStreamCryptoTest {
   }
   private byte[] encrypt(byte[] raw)throws Exception{ByteArrayOutputStream out=new ByteArrayOutputStream();BackupStreamCrypto.encrypt(new ByteArrayInputStream(raw),out,PASSWORD,new AtomicBoolean(),n->{});return out.toByteArray();}
   private void decrypt(byte[] encrypted,char[] password)throws Exception{BackupStreamCrypto.decrypt(new ByteArrayInputStream(encrypted),DISCARD,password,new AtomicBoolean(),n->{});}
-  @Test public void maximum100MiBRoundTripUnder64MiBHeap()throws Exception{
+  @Test public void maximumBackupRoundTripUnder64MiBHeap()throws Exception{
     assertTrue("Gradle test heap must stay bounded",Runtime.getRuntime().maxMemory()<=70L*1024*1024);
-    File file=File.createTempFile("hnbk2-100m",".tmp");
+    File file=File.createTempFile("hnbk2-maximum",".tmp");
     try{
       MessageDigest expected=MessageDigest.getInstance("SHA-256"),actual=MessageDigest.getInstance("SHA-256");
       try(InputStream in=new java.security.DigestInputStream(new Generated(BackupStreamCrypto.MAX_BYTES),expected);OutputStream out=new BufferedOutputStream(new FileOutputStream(file))){BackupStreamCrypto.encrypt(in,out,PASSWORD,new AtomicBoolean(),n->{});}
