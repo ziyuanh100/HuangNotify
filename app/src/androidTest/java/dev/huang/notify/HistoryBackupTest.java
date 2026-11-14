@@ -7,8 +7,13 @@ import android.database.sqlite.SQLiteStatement;
 import android.net.Uri;
 import android.test.AndroidTestCase;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.RandomAccessFile;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.UUID;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 @SuppressWarnings("deprecation")
 public class HistoryBackupTest extends AndroidTestCase {
@@ -63,7 +68,7 @@ public class HistoryBackupTest extends AndroidTestCase {
         assertEquals(1, session.stage.images);
         assertEquals(RECORDS, store.restoreStage(session.stage, true, restore)[0]);
       }
-      assertEquals(VERSIONS, store.historyCount());
+      assertEquals(VERSIONS, store.storageUsage().historyCount);
       assertEquals(RECORDS, store.counts()[0]);
       assertEquals("30", store.setting("retention", "0"));
       Record restored = store.list("", null, true, false, 1).get(0);
@@ -85,6 +90,89 @@ public class HistoryBackupTest extends AndroidTestCase {
     } finally {
       java.util.Arrays.fill(password, '\0');
       destination.delete(document);
+    }
+  }
+
+  public void testTwoMillionHistoryEntriesRestoreAndRejectOneMore() throws Exception {
+    int limit = 2_000_000;
+    int recordCount = 2000;
+    File dir = new File(getContext().getCacheDir(), "history-limit-" + UUID.randomUUID());
+    assertTrue(dir.mkdir());
+    try {
+      seedCompactVersions(recordCount, limit);
+      File json = new File(dir, "limit.json");
+      try (FileOutputStream output = new FileOutputStream(json)) {
+        BackupArchive.write(store.getReadableDatabase(), output, new BackupTask());
+      }
+      assertTrue(json.length() < BackupStreamCrypto.MAX_BYTES);
+
+      clearRecords();
+      File staging = new File(dir, "stage.db");
+      try (BackupArchive.Stage stage = BackupArchive.read(json, staging, new BackupTask())) {
+        assertEquals(limit, stage.versions);
+        assertEquals(recordCount, stage.records);
+        assertEquals(recordCount, store.restoreStage(stage, false, new BackupTask())[0]);
+      }
+      assertTrue(SQLiteDatabase.deleteDatabase(staging));
+      assertEquals(limit, store.storageUsage().historyCount);
+
+      appendOneVersion(json, limit);
+      assertTrue(json.length() < BackupStreamCrypto.MAX_BYTES);
+      try (BackupArchive.Stage ignored = BackupArchive.read(json, staging, new BackupTask())) {
+        fail("Accepted a backup with 2,000,001 history entries");
+      } catch (BackupProblem expected) {
+        assertEquals(BackupArchive.TOO_MANY_VERSIONS, expected.getMessage());
+      }
+      assertEquals(limit, store.storageUsage().historyCount);
+
+      store.capture("after-limit", PACKAGE, "Fixture", "t", "1", TIME);
+      File rejected = new File(dir, "rejected.json");
+      try (FileOutputStream output = new FileOutputStream(rejected)) {
+        BackupArchive.write(store.getReadableDatabase(), output, new BackupTask());
+        fail("Exported a backup with 2,000,001 history entries");
+      } catch (BackupProblem expected) {
+        assertEquals(BackupArchive.TOO_MANY_VERSIONS, expected.getMessage());
+      }
+      assertEquals(0, rejected.length());
+      assertEquals(limit + 1L, store.storageUsage().historyCount);
+    } finally {
+      BackupFiles.erase(dir);
+    }
+  }
+
+  private void seedCompactVersions(int recordCount, int versions) {
+    SQLiteDatabase db = store.getWritableDatabase();
+    String sequence = "WITH RECURSIVE numbers(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM numbers WHERE n+1<?) ";
+    String recordId = "printf('00000000-0000-0001-0000-%012x', ";
+    db.beginTransaction();
+    try {
+      db.execSQL(sequence + "INSERT INTO records(id,nkey,pkg,app,title,body,posted,first_seen,updated,hash)"
+              + " SELECT " + recordId + "n), 'compact-'||n, ?, 'Fixture', 't', '1', ?, ?, ?, ? FROM numbers",
+          new Object[]{recordCount, PACKAGE, TIME, TIME, TIME + versions, EventPolicy.fingerprint("t", "1")});
+      db.execSQL(sequence + "INSERT INTO versions(id,record_id,time,title,body,hash)"
+              + " SELECT printf('00000000-0000-0000-0000-%012x',n), " + recordId + "n%?), ?+n, 't',"
+              + " CASE n/?%2 WHEN 0 THEN '0' ELSE '1' END, CASE n/?%2 WHEN 0 THEN ? ELSE ? END FROM numbers",
+          new Object[]{versions, recordCount, TIME, recordCount, recordCount,
+              EventPolicy.fingerprint("t", "0"), EventPolicy.fingerprint("t", "1")});
+      db.setTransactionSuccessful();
+    } finally {
+      db.endTransaction();
+    }
+  }
+
+  private static void appendOneVersion(File json, int version) throws Exception {
+    byte[] suffix = "]}],\"images\":[],\"settings\":{}}".getBytes(StandardCharsets.UTF_8);
+    String extra = "," + new JSONObject().put("id", new UUID(0, version).toString()).put("time", TIME)
+        .put("title", "t").put("body", "1").put("image_status", "none").put("images", new JSONArray());
+    try (RandomAccessFile file = new RandomAccessFile(json, "rw")) {
+      long offset = file.length() - suffix.length;
+      file.seek(offset);
+      byte[] actual = new byte[suffix.length];
+      file.readFully(actual);
+      assertTrue(java.util.Arrays.equals(suffix, actual));
+      file.seek(offset);
+      file.write(extra.getBytes(StandardCharsets.UTF_8));
+      file.write(suffix);
     }
   }
 

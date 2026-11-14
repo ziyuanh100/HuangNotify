@@ -82,6 +82,35 @@ public class StreamingBackupTest extends AndroidTestCase {
       try(BackupArchive.Stage cleared=BackupArchive.read(output,new File(dir,"clear.db"),new BackupTask())){assertEquals(3,cleared.format);assertEquals(0,cleared.images);}
     }
   }
+
+  public void testStorageUsageCountsUtf8NotesAndSharedImages() throws Exception {
+    NotificationImages.Attachment picture = ImageStoreTest.picture(0xff146c59);
+    capture("first", picture);
+    String record = store.list("", null, false, false, 1).get(0).id;
+    Store.StorageUsage original = store.storageUsage();
+    String note = "備註🙂";
+    store.note(record, note);
+    Store.StorageUsage annotated = store.storageUsage();
+    assertEquals(note.getBytes(StandardCharsets.UTF_8).length,
+        annotated.notificationBytes - original.notificationBytes);
+    assertEquals(original.historyBytes, annotated.historyBytes);
+
+    capture("second", picture);
+    Store.StorageUsage shared = store.storageUsage();
+    assertEquals(2, shared.historyCount);
+    assertEquals(original.historyBytes * 2, shared.historyBytes);
+    assertEquals(1, shared.imageCount);
+    assertEquals(picture.data.length, shared.imageBytes);
+    assertEquals(shared.totalBytes,
+        shared.notificationBytes + shared.historyBytes + shared.imageBytes + shared.otherBytes());
+
+    store.clearImages(true);
+    Store.StorageUsage cleared = store.storageUsage();
+    assertEquals(shared.historyCount, cleared.historyCount);
+    assertEquals(0, cleared.imageBytes);
+    assertEquals(0, cleared.imageCount);
+  }
+
   public void testDiagnosticsBoundedPrivateAndCanBeDisabled()throws Exception{
     capture("secret-key",null);for(int i=0;i<210;i++)Diagnostics.record(store,"received","stream.fixture");Diagnostics.record(store,"saved","stream.fixture");
     JSONObject report=Diagnostics.report(store,getContext());assertEquals(200,report.getJSONArray("events").length());String serialized=report.toString();assertFalse(serialized.contains("私密"));assertFalse(serialized.contains("secret-key"));assertTrue(report.getLong("last_received")>0);assertTrue(report.getLong("last_saved")>0);
