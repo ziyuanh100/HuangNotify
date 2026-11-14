@@ -14,7 +14,8 @@ import org.json.*;
 final class BackupArchive {
   static final String[] TEXT={"id","nkey","pkg","app","title","body","note"};
   static final String[] TIMES={"posted","first_seen","updated","removed","reason","favorite"};
-  static final int MAX_RECORDS=100000,MAX_VERSIONS=200000,MAX_IMAGES=100000;
+  // The streamed byte limit bounds history without a separate cutoff for frequently updated records.
+  static final int MAX_RECORDS=100000,MAX_IMAGES=100000;
   static List<String> refs(SQLiteDatabase db,String table,String column,String id) {
     List<String> result=new ArrayList<>();
     try(Cursor c=db.rawQuery("SELECT image_hash FROM "+table+" WHERE "+column+"=? ORDER BY position",new String[]{id})){while(c.moveToNext())result.add(c.getString(0));}return result;
@@ -55,7 +56,7 @@ final class BackupArchive {
   }
 
   private static void writeRecords(SQLiteDatabase db, BackupJsonWriter writer, BackupTask task) throws Exception {
-    int records = 0, versions = 0;
+    int records = 0;
     String[] before = null;
     try (VersionPages history = new VersionPages(db);
         Links currentImages = new Links(db.rawQuery(
@@ -84,7 +85,6 @@ final class BackupArchive {
             writer.name("versions").beginArray();
             while (more && id.equals(history.recordId)) {
               task.check();
-              if (++versions > MAX_VERSIONS) throw invalid("更新歷程超過上限");
               Cursor version = history.cursor;
               String versionId = version.getString(3);
               writer.beginObject().name(VERSION_TEXT[0]).value(versionId);
@@ -193,7 +193,7 @@ final class BackupArchive {
     Stage(File file){this.file=file;db=SQLiteDatabase.openOrCreateDatabase(file,null);try{db.execSQL("PRAGMA synchronous=NORMAL");
       db.execSQL("CREATE TABLE records(ordinal INTEGER UNIQUE,id TEXT PRIMARY KEY,nkey TEXT,pkg TEXT,app TEXT,title TEXT,body TEXT,note TEXT,posted INTEGER,first_seen INTEGER,updated INTEGER,removed INTEGER,reason INTEGER,favorite INTEGER,image_status TEXT,has_images INTEGER,has_status INTEGER)");
       db.execSQL("CREATE TABLE versions(id TEXT PRIMARY KEY,owner INTEGER,seq INTEGER,time INTEGER,title TEXT,body TEXT,image_status TEXT,has_images INTEGER,has_status INTEGER)");
-      db.execSQL("CREATE INDEX versions_owner ON versions(owner)");
+      db.execSQL("CREATE INDEX versions_owner ON versions(owner,time,seq DESC)");
       db.execSQL("CREATE TABLE images(hash TEXT PRIMARY KEY,data BLOB,width INTEGER,height INTEGER)");
       db.execSQL("CREATE TABLE refs(kind TEXT,owner TEXT,position INTEGER,hash TEXT,PRIMARY KEY(kind,owner,position))");db.execSQL("CREATE INDEX refs_hash ON refs(hash)");
       db.execSQL("CREATE TABLE settings(name TEXT PRIMARY KEY,value TEXT)");
@@ -262,8 +262,8 @@ final class BackupArchive {
   }
   private static void readVersions(JsonReader r,Stage stage,BackupTask task,int owner)throws Exception {
     r.beginArray();while(r.hasNext()) {
-      if(++stage.versions>MAX_VERSIONS)throw invalid("更新歷程數量超過上限");JSONObject data=readObject(r,stage,task,owner,false);validateRow(data,false);
-      ContentValues v=values(data,false);v.put("owner",owner);v.put("seq",stage.versions);stage.db.insertOrThrow("versions",null,v);putRefs(stage,data,"v",data.getString("id"));
+      JSONObject data=readObject(r,stage,task,owner,false);validateRow(data,false);
+      ContentValues v=values(data,false);v.put("owner",owner);v.put("seq",++stage.versions);stage.db.insertOrThrow("versions",null,v);putRefs(stage,data,"v",data.getString("id"));
     }r.endArray();
   }
   static ContentValues values(JSONObject data,boolean record)throws Exception {

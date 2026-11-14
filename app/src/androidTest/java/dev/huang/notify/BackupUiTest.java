@@ -44,7 +44,9 @@ public class BackupUiTest extends ActivityInstrumentationTestCase2<MainActivity>
     assertNotNull(dialog());assertNotNull(find(dialog().getWindow().getDecorView(),"通知診斷"));assertNotNull(find(dialog().getWindow().getDecorView(),"重新連線通知服務"));capture("diagnostics.png");
     getInstrumentation().runOnMainSync(()->AppDialog.dismissAll(main));java.lang.reflect.Method storage=MainActivity.class.getDeclaredMethod("storageDialog");storage.setAccessible(true);
     getInstrumentation().runOnMainSync(()->{try{storage.invoke(main);}catch(Exception e){throw new RuntimeException(e);}});Store.IO.submit(()->{}).get();getInstrumentation().waitForIdleSync();
-    assertNotNull(find(dialog().getWindow().getDecorView(),"儲存概況"));capture("image-storage.png");
+    assertNotNull(find(dialog().getWindow().getDecorView(),"儲存概況"));
+    assertNotNull(findContaining(dialog().getWindow().getDecorView(),"含每則通知的初次記錄"));
+    capture("image-storage.png");
     getInstrumentation().runOnMainSync(()->dialogUnchecked().getButton(AppDialog.BUTTON_NEUTRAL).performClick());getInstrumentation().waitForIdleSync();
     AppDialog.Toggle toggle=toggle(dialog().getWindow().getDecorView());assertNotNull(toggle);assertFalse(toggle.isChecked());getInstrumentation().runOnMainSync(()->dialogUnchecked().getButton(AppDialog.BUTTON_NEGATIVE).performClick());
   }
@@ -74,6 +76,17 @@ public class BackupUiTest extends ActivityInstrumentationTestCase2<MainActivity>
   }
   private AppDialog dialogUnchecked(){try{return dialog();}catch(Exception e){throw new RuntimeException(e);}}
   private View find(View v,String text){if(v instanceof TextView&&text.contentEquals(((TextView)v).getText()))return v;if(v instanceof ViewGroup)for(int i=0;i<((ViewGroup)v).getChildCount();i++){View found=find(((ViewGroup)v).getChildAt(i),text);if(found!=null)return found;}return null;}
+  private View findContaining(View view, String text) {
+    if (view instanceof TextView && ((TextView) view).getText().toString().contains(text)) return view;
+    if (view instanceof ViewGroup) {
+      ViewGroup children = (ViewGroup) view;
+      for (int i = 0; i < children.getChildCount(); i++) {
+        View found = findContaining(children.getChildAt(i), text);
+        if (found != null) return found;
+      }
+    }
+    return null;
+  }
   private AppDialog.Toggle toggle(View v){if(v instanceof AppDialog.Toggle)return (AppDialog.Toggle)v;if(v instanceof ViewGroup)for(int i=0;i<((ViewGroup)v).getChildCount();i++){AppDialog.Toggle found=toggle(((ViewGroup)v).getChildAt(i));if(found!=null)return found;}return null;}
   private void capture(String name)throws Exception{for(String command:new String[]{"mkdir -p /data/local/tmp/huangnotify-ui-preview","screencap -p /data/local/tmp/huangnotify-ui-preview/"+name})try(android.os.ParcelFileDescriptor fd=getInstrumentation().getUiAutomation().executeShellCommand(command);java.io.InputStream in=new java.io.FileInputStream(fd.getFileDescriptor())){byte[] b=new byte[1024];while(in.read(b)!=-1){}}}
 }

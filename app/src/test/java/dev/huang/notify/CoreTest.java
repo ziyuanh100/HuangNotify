@@ -57,7 +57,8 @@ public class CoreTest {
   @Test
   public void contentHashSeparatesTitleAndBody() {
     assertNotEquals(EventPolicy.fingerprint("ab", "c"), EventPolicy.fingerprint("a", "bc"));
-    assertEquals(EventPolicy.fingerprint("標題", "內容"), EventPolicy.fingerprint("標題", "內容"));
+    assertEquals("39a372d4f64adae1160459252e08936fc831c1e99f73c8622b92f587b04cee75",
+        EventPolicy.fingerprint("標題", "內容"));
     assertNotEquals(EventPolicy.fingerprint("標題", "內容"), EventPolicy.fingerprint("標題", "更新"));
   }
 

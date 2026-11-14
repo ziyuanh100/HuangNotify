@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
 public final class EventPolicy {
+  private static final String HEX = "0123456789abcdef";
   private EventPolicy() {}
 
   public static String fingerprint(String title, String text) {
@@ -11,9 +12,12 @@ public final class EventPolicy {
       byte[] bytes =
           MessageDigest.getInstance("SHA-256")
               .digest((title.length() + ":" + title + text).getBytes(StandardCharsets.UTF_8));
-      StringBuilder out = new StringBuilder();
-      for (byte b : bytes) out.append(String.format(java.util.Locale.ROOT, "%02x", b & 255));
-      return out.toString();
+      char[] out = new char[bytes.length * 2];
+      for (int i = 0; i < bytes.length; i++) {
+        out[i * 2] = HEX.charAt((bytes[i] & 255) >>> 4);
+        out[i * 2 + 1] = HEX.charAt(bytes[i] & 15);
+      }
+      return new String(out);
     } catch (java.security.NoSuchAlgorithmException e) {
       throw new IllegalStateException(e);
     }
