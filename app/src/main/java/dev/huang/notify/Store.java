@@ -615,11 +615,15 @@ public final class Store extends SQLiteOpenHelper {
           if(!exists) {ContentValues v=importValues(records,true);v.put("active",0);v.put("hash",importedHash(records,refs));db.insertOrThrow("records",null,v);linkImages("record_images","record_id",id,refs);added++;}else skipped++;
           try(Cursor versions=stage.db.rawQuery("SELECT * FROM versions WHERE owner=? ORDER BY time ASC,seq DESC",new String[]{ordinal})) {
             while(versions.moveToNext()) {
-              task.check();String vid=s(versions,"id");List<String> vrefs=stage.refs("v",vid);boolean found;
+              task.check();
+              String vid=s(versions,"id"), status=s(versions,"image_status");
+              List<String> vrefs="saved".equals(status)||"partial".equals(status)
+                  ?stage.refs("v",vid):java.util.Collections.emptyList();
+              boolean found;
               try(Cursor old=db.rawQuery("SELECT record_id,time,title,body,image_status FROM versions WHERE id=?",new String[]{vid})) {
                 found=old.moveToFirst();if(found) {
                   if(!id.equals(old.getString(0))||old.getLong(1)!=l(versions,"time")||!old.getString(2).equals(s(versions,"title"))||!old.getString(3).equals(s(versions,"body")))throw new BackupProblem("更新歷程識別碼衝突，未匯入任何資料");
-                  if(stage.format>=2&&(!s(versions,"image_status").equals(old.getString(4))||!vrefs.equals(imageHashes("version_images","version_id",vid)))) {
+                  if(stage.format>=2&&(!status.equals(old.getString(4))||!vrefs.equals(imageHashes("version_images","version_id",vid)))) {
                     if("cleared".equals(old.getString(4))&&!vrefs.isEmpty()) {ContentValues v=new ContentValues();v.put("image_status",s(versions,"image_status"));v.put("hash",importedHash(versions,vrefs));db.update("versions",v,"id=?",new String[]{vid});linkImages("version_images","version_id",vid,vrefs);merged++;}
                     else throw new BackupProblem("更新歷程圖片衝突，未匯入任何資料");
                   }
@@ -635,6 +639,12 @@ public final class Store extends SQLiteOpenHelper {
     } finally {db.endTransaction();}
   }
   long[] imageUsage() {try(Cursor c=getReadableDatabase().rawQuery("SELECT COUNT(*),COALESCE(SUM(length(data)),0) FROM images WHERE EXISTS(SELECT 1 FROM record_images r WHERE r.image_hash=images.hash) OR EXISTS(SELECT 1 FROM version_images v WHERE v.image_hash=images.hash)",null)){c.moveToFirst();return new long[]{c.getLong(0),c.getLong(1)};}}
+  long historyCount() {
+    try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM versions", null)) {
+      c.moveToFirst();
+      return c.getLong(0);
+    }
+  }
   long[] imageCleanupPreview(boolean includeFavorites){
     SQLiteDatabase db=getReadableDatabase();String target=includeFavorites?"1=1":"r.favorite=0";
     long count;try(Cursor c=db.rawQuery("SELECT COUNT(*) FROM records r WHERE "+target+" AND (EXISTS(SELECT 1 FROM record_images i WHERE i.record_id=r.id) OR EXISTS(SELECT 1 FROM versions v JOIN version_images i ON i.version_id=v.id WHERE v.record_id=r.id))",null)){c.moveToFirst();count=c.getLong(0);}

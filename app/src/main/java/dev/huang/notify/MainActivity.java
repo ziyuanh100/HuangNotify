@@ -1672,9 +1672,9 @@ public final class MainActivity extends Activity {
   }
 
   private void storageDialog() {
-    Store.IO.execute(()->{try{long[] usage=Store.get(this).imageUsage();runOnUiThread(()->{
+    Store.IO.execute(()->{try{Store store=Store.get(this);long[] usage=store.imageUsage();long history=store.historyCount();runOnUiThread(()->{
       if(isDestroyed())return;
-      StringBuilder text=new StringBuilder("目前保存 "+format(counts[0])+" 則\n今日新增 "+format(counts[1])+" 則\n收藏 "+format(counts[2])+" 則\n資料庫大小 "+databaseSize()+"\n圖片 "+usage[0]+" 張（共用圖片只計一次） · "+android.text.format.Formatter.formatFileSize(this,usage[1])+"\n\n各 App 保存數量\n");
+      StringBuilder text=new StringBuilder("目前保存 "+format(counts[0])+" 則\n今日新增 "+format(counts[1])+" 則\n收藏 "+format(counts[2])+" 則\n更新歷程 "+format(history)+" 筆（含每則通知的初次記錄）\n資料庫大小 "+databaseSize()+"\n圖片 "+usage[0]+" 張（共用圖片只計一次） · "+android.text.format.Formatter.formatFileSize(this,usage[1])+"\n\n各 App 保存數量\n");
       for(String[] app:apps)text.append(app[1]).append("：").append(app[2]).append(" 則\n");
       text.append("\n通知更新另存為歷程。清除圖片會保留文字、歷程、收藏與備註；已釋出的資料庫空間可再次使用，檔案大小不一定立即縮小。");
       new AppDialog.Builder(this).setTitle("儲存概況").setMessage(text.toString()).setPositiveButton("完成",null).setNeutralButton("清除已保存圖片",(d,w)->clearImagesDialog()).show();
