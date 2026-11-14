@@ -7,15 +7,17 @@ import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.test.ActivityInstrumentationTestCase2;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.DatePicker;
 import android.widget.EditText;
 import android.widget.ListView;
+import android.widget.NumberPicker;
 import android.widget.TextView;
 import java.io.FileInputStream;
 import java.lang.reflect.Field;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
@@ -89,6 +91,10 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     awaitText(dashboard, today.minusDays(29) + " ～ " + today);
     assertFullChart("analysis_daily_chart", 30);
     assertFullChart("analysis_hourly_chart", 24);
+    dragAcrossChart("analysis_hourly_chart", 9, 23);
+    awaitText(dashboard, "23:00–23:59 · 0 則");
+    click(await(dashboard, v -> "上一個時段".equals(v.getContentDescription()), "previous hour"));
+    awaitText(dashboard, "22:00–22:59 · 0 則");
     click(await(dashboard, v -> "00:00–00:59，0 則".equals(v.getContentDescription()), "midnight bar"));
     awaitText(dashboard, "00:00–00:59 · 0 則");
     awaitText(dashboard, "通知最多 09:00–09:59");
@@ -99,10 +105,16 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     scrollAnalysis(0);
     click(await(dashboard, v -> "查看 甲 App 的趨勢".equals(v.getContentDescription()), "App trend"));
     awaitText(dashboard, "甲 App ▾");
+    View trend = await(dashboard, v -> "analysis_daily_section".equals(v.getTag())
+        && v.getGlobalVisibleRect(new android.graphics.Rect()), "selected App trend");
+    int trendTop = locationY(trend);
     chooseApp("甲 App ▾", BETA);
     awaitText(dashboard, "乙 App ▾");
     awaitText(dashboard, today + " · 2 則");
     awaitText(dashboard, today.minusDays(29) + " ～ " + today);
+    View newTrend = await(dashboard, v -> "analysis_daily_section".equals(v.getTag()) && v != trend
+        && v.getGlobalVisibleRect(new android.graphics.Rect()), "App trend after switching");
+    assertEquals(trendTop, locationY(newTrend));
     chooseApp("乙 App ▾", ALPHA);
     awaitText(dashboard, "甲 App ▾");
     dashboard = startDashboard(() -> getInstrumentation().runOnMainSync(dashboard::recreate));
@@ -123,6 +135,7 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     getInstrumentation().runOnMainSync(() -> scopedSearch.setText("yesterday 83"));
     awaitText(main, "1 則");
 
+    getInstrumentation().waitForIdleSync();
     dashboard = startDashboard(() -> getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK));
     awaitText(dashboard, today.minusDays(29) + " ～ " + today);
     awaitText(dashboard, "甲 App ▾");
@@ -160,11 +173,22 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     choosePeriod("自訂日期");
     AppDialog dialog = activeDialog(dashboard);
     View dialogView = dialog.getWindow().getDecorView();
-    DatePicker calendar = dialogView.findViewWithTag("analysis_calendar");
-    assertNotNull(calendar);
     LocalDate first = today.minusDays(60), last = today.minusDays(15);
-    chooseDate(dialogView.findViewWithTag("analysis_start_date"), calendar, first, RecordFilters.MIN_DATE);
-    chooseDate(dialogView.findViewWithTag("analysis_end_date"), calendar, last, first);
+    jumpToMonth(dialogView, YearMonth.from(first));
+    View firstDay = dialogView.findViewWithTag(first.toString());
+    assertNotNull(firstDay);
+    click(firstDay);
+    assertTrue(dialogView.findViewWithTag("analysis_end_date").isSelected());
+    if (first.getDayOfMonth() > 1) {
+      View earlier = dialogView.findViewWithTag(first.minusDays(1).toString());
+      assertNotNull(earlier);
+      assertFalse(earlier.isEnabled());
+    }
+    jumpToMonth(dialogView, YearMonth.from(last));
+    View lastDay = dialogView.findViewWithTag(last.toString());
+    assertNotNull(lastDay);
+    click(lastDay);
+    assertTrue(lastDay.isSelected());
     assertSame(dialog, activeDialog(dashboard));
     assertNotNull(find(dialogView, v -> v instanceof TextView && "共 46 天".contentEquals(((TextView) v).getText())));
     getInstrumentation().waitForIdleSync();
@@ -215,14 +239,54 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     click(option);
   }
 
-  private void chooseDate(View button, DatePicker calendar, LocalDate date, LocalDate minimum) {
-    assertNotNull(button);
-    click(button);
+  private void jumpToMonth(View calendar, YearMonth target) throws Exception {
+    View month = find(calendar, v -> v.getContentDescription() != null
+        && v.getContentDescription().toString().startsWith("跳到年月，"));
+    assertNotNull(month);
+    click(month);
+    AppDialog dialog = activeDialog(dashboard);
+    View root = dialog.getWindow().getDecorView();
+    NumberPicker year = (NumberPicker) find(root, v -> v instanceof NumberPicker
+        && "年".equals(v.getContentDescription()));
+    NumberPicker monthNumber = (NumberPicker) find(root, v -> v instanceof NumberPicker
+        && "月".equals(v.getContentDescription()));
+    assertNotNull(year);
+    assertNotNull(monthNumber);
     getInstrumentation().runOnMainSync(() -> {
-      assertEquals(minimum.atStartOfDay(zone).toInstant().toEpochMilli(), calendar.getMinDate());
-      calendar.updateDate(date.getYear(), date.getMonthValue() - 1, date.getDayOfMonth());
+      year.setValue(target.getYear());
+      monthNumber.setValue(target.getMonthValue());
     });
-    assertTrue(((TextView) button).getText().toString().endsWith(date.toString()));
+    click(dialog.getButton(AppDialog.BUTTON_POSITIVE));
+  }
+
+  private int locationY(View view) {
+    int[] position = new int[2];
+    getInstrumentation().runOnMainSync(() -> view.getLocationOnScreen(position));
+    return position[1];
+  }
+
+  private void dragAcrossChart(String tag, int from, int to) throws Exception {
+    ViewGroup chart = (ViewGroup) await(dashboard, v -> tag.equals(v.getTag()) && v.getWidth() > 0, tag);
+    getInstrumentation().runOnMainSync(() -> {
+      ViewGroup plot = (ViewGroup) chart.getChildAt(0);
+      View start = plot.getChildAt(from), end = plot.getChildAt(to);
+      float startX = start.getLeft() + start.getWidth() / 2f;
+      float endX = end.getLeft() + end.getWidth() / 2f;
+      float y = plot.getHeight() / 2f;
+      long down = SystemClock.uptimeMillis();
+      for (int step = 0; step <= 4; step++) {
+        int action = step == 0 ? MotionEvent.ACTION_DOWN
+            : step == 4 ? MotionEvent.ACTION_UP : MotionEvent.ACTION_MOVE;
+        MotionEvent event = MotionEvent.obtain(down, down + step * 16L, action,
+            startX + (endX - startX) * step / 4, y, 0);
+        try {
+          chart.dispatchTouchEvent(event);
+        } finally {
+          event.recycle();
+        }
+      }
+      assertTrue(end.isSelected());
+    });
   }
 
   private void assertFullChart(String tag, int count) throws Exception {

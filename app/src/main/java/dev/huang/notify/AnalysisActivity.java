@@ -15,7 +15,6 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.widget.BaseAdapter;
-import android.widget.DatePicker;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -39,6 +38,9 @@ public final class AnalysisActivity extends Activity {
   static final String DASHBOARD_STATE = "dashboard_state";
   private static final int TODAY = 0, WEEK = 1, MONTH = 2, CUSTOM = 3;
   private static final int CHART_DAYS = 30;
+  private static final String DAILY = "analysis_daily_section";
+  private static final String HOURLY = "analysis_hourly_section";
+  private static final String RANKING = "analysis_ranking_section";
   private static final int TOP_APPS = 3;
   private static final String[] PERIODS = {"今天", "近 7 天", "近 30 天", "自訂日期"};
   private static final DateTimeFormatter SHORT_DATE = DateTimeFormatter.ofPattern("M/d", Locale.TAIWAN);
@@ -53,6 +55,9 @@ public final class AnalysisActivity extends Activity {
   private RankAdapter ranking;
   private NotificationAnalysis analysis;
   private CancellationSignal loading;
+  private View dailySection, hourlySection, rankingSection;
+  private String scrollSection;
+  private int scrollSectionTop;
   private int period = WEEK;
   private int scrollPosition, scrollTop, selectedHour = -1;
   private String customFirst = "", customLast = "", pkg, appName;
@@ -77,6 +82,8 @@ public final class AnalysisActivity extends Activity {
       selectedHour = state.getInt("selected_hour", -1);
       scrollPosition = state.getInt("scroll_position");
       scrollTop = state.getInt("scroll_top");
+      scrollSection = state.getString("scroll_section");
+      scrollSectionTop = state.getInt("scroll_section_top");
     }
 
     LinearLayout root = u.column();
@@ -128,7 +135,7 @@ public final class AnalysisActivity extends Activity {
 
   @Override protected void onResume() {
     super.onResume();
-    loadAnalysis(true);
+    loadAnalysis(false);
   }
 
   @Override protected void onStop() {
@@ -158,12 +165,28 @@ public final class AnalysisActivity extends Activity {
     state.putInt("selected_hour", selectedHour);
     state.putInt("scroll_position", scrollPosition);
     state.putInt("scroll_top", scrollTop);
+    state.putString("scroll_section", scrollSection);
+    state.putInt("scroll_section_top", scrollSectionTop);
   }
 
   private void rememberScroll() {
     if (analysis == null || list.getChildCount() == 0) return;
     scrollPosition = list.getFirstVisiblePosition();
     scrollTop = list.getChildAt(0).getTop();
+    scrollSection = null;
+    if (scrollPosition > 0) {
+      scrollSection = RANKING;
+      return;
+    }
+    if (scrollTop >= 0) return;
+    for (View section : new View[]{dailySection, hourlySection, rankingSection}) {
+      if (section == null || section.getParent() != body) continue;
+      int top = scrollTop + body.getTop() + section.getTop();
+      if (top <= u.d(64)) {
+        scrollSection = (String) section.getTag();
+        scrollSectionTop = top;
+      }
+    }
   }
 
   private void buildPeriodControls(LinearLayout root) {
@@ -173,7 +196,8 @@ public final class AnalysisActivity extends Activity {
     periodButton = u.button("", false);
     periodButton.setOnClickListener(v -> choosePeriod());
     scope = u.button("", false);
-    scope.setOnClickListener(v -> new AnalysisAppPicker(this, u, pkg, this::selectApp).show());
+    scope.setOnClickListener(v -> new AnalysisAppPicker(this, u, pkg,
+        (packageName, name) -> selectApp(packageName, name, false)).show());
     for (TextView button : new TextView[]{periodButton, scope}) {
       button.setMaxLines(2);
       button.setEllipsize(TextUtils.TruncateAt.END);
@@ -197,95 +221,46 @@ public final class AnalysisActivity extends Activity {
   }
 
   private void chooseDates() {
-    LinearLayout fields = u.column();
-    LocalDate[] dates = {customFirst.isEmpty() ? first : LocalDate.parse(customFirst),
-        customLast.isEmpty() ? last : LocalDate.parse(customLast)};
-    TextView start = u.button("", false), end = u.button("", false);
-    start.setTag("analysis_start_date");
-    end.setTag("analysis_end_date");
-    int[] edge = {0};
-    boolean[] switching = {false};
-    ZoneId zone = ZoneId.systemDefault();
-    DatePicker calendar = new DatePicker(this);
-    calendar.setTag("analysis_calendar");
-    calendar.setMinDate(RecordFilters.MIN_DATE.atStartOfDay(zone).toInstant().toEpochMilli());
-    calendar.setMaxDate(RecordFilters.MAX_DATE.atStartOfDay(zone).toInstant().toEpochMilli());
-    TextView span = u.text("", 14, u.muted, true);
-    Runnable update = () -> {
-      start.setText("開始日期\n" + dates[0]);
-      start.setContentDescription("選擇開始日期，" + dates[0]);
-      end.setText("結束日期\n" + dates[1]);
-      end.setContentDescription("選擇結束日期，" + dates[1]);
-      start.setSelected(edge[0] == 0);
-      end.setSelected(edge[0] == 1);
-      start.setTextColor(edge[0] == 0 ? u.onAccent : u.accent);
-      end.setTextColor(edge[0] == 1 ? u.onAccent : u.accent);
-      u.ripple(start, edge[0] == 0 ? u.accent : u.pale, 16);
-      u.ripple(end, edge[0] == 1 ? u.accent : u.pale, 16);
-      span.setText("共 " + integers.format(ChronoUnit.DAYS.between(dates[0], dates[1]) + 1) + " 天");
-    };
-    calendar.init(dates[0].getYear(), dates[0].getMonthValue() - 1, dates[0].getDayOfMonth(),
-        (view, year, month, day) -> {
-          if (switching[0]) return;
-          LocalDate date = LocalDate.of(year, month + 1, day);
-          dates[edge[0]] = date;
-          if (dates[1].isBefore(dates[0])) dates[1] = dates[0];
-          update.run();
-        });
-    IntConsumer activate = index -> {
-      edge[0] = index;
-      switching[0] = true;
-      LocalDate minimum = index == 0 ? RecordFilters.MIN_DATE : dates[0];
-      calendar.setMinDate(minimum.atStartOfDay(zone).toInstant().toEpochMilli());
-      LocalDate date = dates[index];
-      calendar.updateDate(date.getYear(), date.getMonthValue() - 1, date.getDayOfMonth());
-      switching[0] = false;
-      update.run();
-    };
-    start.setOnClickListener(v -> activate.accept(0));
-    end.setOnClickListener(v -> activate.accept(1));
-    LinearLayout edges = u.row();
-    addColumn(edges, start);
-    addColumn(edges, end);
-    fields.addView(edges);
-    u.gap(fields, 6);
-    fields.addView(span);
-    u.gap(fields, 6);
-    ScrollView calendarScroll = new ScrollView(this);
-    calendarScroll.addView(calendar, new ScrollView.LayoutParams(-1, -2));
-    fields.addView(calendarScroll, new LinearLayout.LayoutParams(-1, 0, 1));
-    update.run();
-    new AppDialog.Builder(this).setTitle("自訂日期").setExpandedView(fields).setNegativeButton("取消", null)
+    AnalysisCalendar calendar = new AnalysisCalendar(u,
+        customFirst.isEmpty() ? first : LocalDate.parse(customFirst),
+        customLast.isEmpty() ? last : LocalDate.parse(customLast));
+    ScrollView scroll = new ScrollView(this);
+    scroll.addView(calendar);
+    new AppDialog.Builder(this).setTitle("自訂日期").setExpandedView(scroll).setNegativeButton("取消", null)
         .setPositiveButton("套用", (dialog, which) -> {
-          customFirst = dates[0].toString();
-          customLast = dates[1].toString();
+          customFirst = calendar.first().toString();
+          customLast = calendar.last().toString();
           selectPeriod(CUSTOM);
         }).show();
   }
 
-  private void selectApp(String packageName, String name) {
+  private void selectApp(String packageName, String name, boolean showTrend) {
     if (Objects.equals(pkg, packageName)) return;
     pkg = packageName;
     appName = name;
-    loadAnalysis(false);
+    loadAnalysis(showTrend);
   }
 
   private void selectPeriod(int choice) {
     period = choice;
-    selectedDay = chartEnd = null;
-    selectedHour = -1;
+    chartEnd = null;
     loadAnalysis(false);
   }
 
-  private void loadAnalysis(boolean keepPosition) {
-    if (keepPosition) rememberScroll();
-    else scrollPosition = scrollTop = 0;
+  private void loadAnalysis(boolean showTrend) {
+    rememberScroll();
+    if (showTrend) {
+      scrollSection = DAILY;
+      scrollPosition = scrollTop = scrollSectionTop = 0;
+    }
     if (loading != null) loading.cancel();
     ZoneId zone = ZoneId.systemDefault();
     last = period == CUSTOM ? LocalDate.parse(customLast) : LocalDate.now(zone);
     first = period == CUSTOM ? LocalDate.parse(customFirst)
         : last.minusDays(period == MONTH ? 29 : period == WEEK ? 6 : 0);
-    if (chartEnd == null || chartEnd.isBefore(first) || chartEnd.isAfter(last)) chartEnd = last;
+    if (period != CUSTOM || chartEnd == null || chartEnd.isBefore(first) || chartEnd.isAfter(last)) {
+      chartEnd = last;
+    }
     periodButton.setText(PERIODS[period] + " ▾");
     periodButton.setContentDescription("日期範圍，" + PERIODS[period]);
     range.setText(dateRange(first, last));
@@ -295,11 +270,8 @@ public final class AnalysisActivity extends Activity {
     scope.setSelected(pkg != null);
     scope.setTextColor(pkg == null ? u.accent : u.onAccent);
     u.ripple(scope, pkg == null ? u.pale : u.accent, 16);
-    analysis = null;
-    ranking.setApps(Collections.emptyList());
-    body.removeAllViews();
-    body.addView(u.text("正在統計通知…", 15, u.muted, false));
-    list.setSelection(0);
+    body.setAlpha(body.getChildCount() == 0 ? 1f : .5f);
+    if (body.getChildCount() == 0) body.addView(u.text("正在統計通知…", 15, u.muted, false));
 
     LocalDate requestedFirst = first, requestedLast = last;
     String requestedPkg = pkg;
@@ -314,21 +286,27 @@ public final class AnalysisActivity extends Activity {
             ? result.ranking() : Collections.emptyList();
         runOnUiThread(() -> {
           if (!isCurrent(request)) return;
+          loading = null;
           analysis = result;
           render(apps);
-          list.setSelectionFromTop(Math.min(scrollPosition, list.getCount() - 1), scrollTop);
+          restoreScroll();
         });
       } catch (OperationCanceledException ignored) {
         // The period or App changed, or the dashboard left the foreground.
       } catch (RuntimeException e) {
         runOnUiThread(() -> {
           if (!isCurrent(request)) return;
+          loading = null;
+          analysis = null;
+          body.setAlpha(1f);
+          ranking.setApps(Collections.emptyList());
           body.removeAllViews();
           body.addView(u.text("無法讀取通知分析", 15, u.ink, true));
           u.gap(body, 8);
           TextView retry = u.button("重試", false);
-          retry.setOnClickListener(v -> loadAnalysis(true));
+          retry.setOnClickListener(v -> loadAnalysis(false));
           body.addView(retry);
+          list.setSelectionFromTop(0, 0);
         });
       }
     });
@@ -338,25 +316,55 @@ public final class AnalysisActivity extends Activity {
     return loading == request && !request.isCanceled() && !isFinishing() && !isDestroyed();
   }
 
+  private void restoreScroll() {
+    View section = scrollSection == null ? null : body.findViewWithTag(scrollSection);
+    boolean pastRanking = RANKING.equals(scrollSection) && section == null && dailySection != null;
+    if (pastRanking) section = dailySection;
+    if (section != null && (scrollPosition == 0 || pastRanking)) {
+      // The header is a single list item. Measure the rebuilt content to locate the same chart.
+      int width = list.getWidth();
+      if (width > 0) {
+        View header = (View) body.getParent();
+        header.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        int top = header.getPaddingTop() + body.getPaddingTop();
+        int index = body.indexOfChild(section);
+        for (int i = 0; i < index; i++) {
+          top += body.getChildAt(i).getMeasuredHeight();
+        }
+        list.setSelectionFromTop(0, (pastRanking ? 0 : scrollSectionTop) - top);
+        return;
+      }
+    }
+    if (scrollSection != null && section == null) {
+      list.setSelectionFromTop(0, 0);
+      return;
+    }
+    list.setSelectionFromTop(Math.min(scrollPosition, list.getCount() - 1), scrollTop);
+  }
+
   private void render(List<NotificationAnalysis.AppCount> apps) {
     body.removeAllViews();
-    LinearLayout overview = u.column();
-    overview.setPadding(u.d(16), u.d(14), u.d(16), u.d(14));
-    overview.setBackground(u.shape(u.hero, 22));
+    body.setAlpha(1f);
+    dailySection = hourlySection = rankingSection = null;
+    LinearLayout summary = u.column();
+    summary.setPadding(u.d(16), u.d(14), u.d(16), u.d(14));
+    summary.setBackground(u.shape(u.hero, 22));
     LinearLayout metrics = u.row();
     metrics.setGravity(Gravity.TOP);
     addMetric(metrics, "已保存通知", integers.format(analysis.total()), u.lime);
     addMetric(metrics, "每日平均", averages.format(analysis.dailyAverage()), u.heroInk);
-    overview.addView(metrics);
+    summary.addView(metrics);
     LocalDate busiest = analysis.busiestDay();
     if (busiest != null) {
-      u.gap(overview, 10);
-      overview.addView(u.text("通知最多的一天", 13, u.heroMuted, false));
-      overview.addView(u.text(busiest + " · " + count(analysis.dailyCount(busiest)), 16, u.heroInk, true));
+      u.gap(summary, 10);
+      summary.addView(u.text("通知最多的一天", 13, u.heroMuted, false));
+      summary.addView(u.text(busiest + " · " + count(analysis.dailyCount(busiest)), 16, u.heroInk, true));
     }
-    body.addView(overview);
+    body.addView(summary);
     u.gap(body, 12);
     if (analysis.total() == 0) {
+      ranking.setApps(Collections.emptyList());
       renderEmpty();
       return;
     }
@@ -380,6 +388,8 @@ public final class AnalysisActivity extends Activity {
     }
 
     LinearLayout daily = card();
+    daily.setTag(DAILY);
+    dailySection = daily;
     renderDaily(daily);
     body.addView(daily);
     u.gap(body, 12);
@@ -387,9 +397,13 @@ public final class AnalysisActivity extends Activity {
 
     if (shown < apps.size()) {
       u.gap(body, 16);
-      addHeading(body, "其餘 App");
-      ranking.setApps(apps.subList(shown, apps.size()));
+      LinearLayout more = u.column();
+      more.setTag(RANKING);
+      rankingSection = more;
+      addHeading(more, "其餘 App");
+      body.addView(more);
     }
+    ranking.setApps(apps.subList(shown, apps.size()));
   }
 
   private void renderEmpty() {
@@ -410,6 +424,8 @@ public final class AnalysisActivity extends Activity {
 
   private void renderHourly() {
     LinearLayout hourly = card();
+    hourly.setTag(HOURLY);
+    hourlySection = hourly;
     addHeading(hourly, "時段分布");
     long[] values = new long[24];
     String[] labels = new String[24], descriptions = new String[24];
@@ -431,12 +447,10 @@ public final class AnalysisActivity extends Activity {
           detail.setText(hourRange(hour) + " · " + count(values[hour]));
         });
     hours.setTag("analysis_hourly_chart");
-    if (selectedHour < 0) selectedHour = peak;
-    hours.select(selectedHour);
-    detail.setText(hourRange(selectedHour) + " · " + count(values[selectedHour]));
     hourly.addView(hours);
     u.gap(hourly, 6);
-    hourly.addView(detail);
+    hourly.addView(hours.selectionControls(detail, "上一個時段", "下一個時段"));
+    hours.select(selectedHour < 0 ? peak : selectedHour);
     body.addView(hourly);
   }
 
@@ -460,13 +474,10 @@ public final class AnalysisActivity extends Activity {
     }
     int selected = selectedDay == null || selectedDay.isBefore(start) || selectedDay.isAfter(chartEnd)
         ? peak : (int) ChronoUnit.DAYS.between(start, selectedDay);
-    LinearLayout detailRow = u.row();
     TextView detail = u.text("", 14, u.ink, true);
     detail.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-    detailRow.addView(detail, new LinearLayout.LayoutParams(0, -2, 1));
     TextView records = u.button("查看紀錄", false);
     records.setTag("analysis_daily_records");
-    detailRow.addView(records);
     records.setOnClickListener(v -> showRecords(selectedDay, selectedDay, pkg, appName));
     IntConsumer update = index -> {
       selectedDay = start.plusDays(index);
@@ -484,11 +495,23 @@ public final class AnalysisActivity extends Activity {
     AnalysisBars days = new AnalysisBars(u, values, analysis.dailyCount(analysis.busiestDay()),
         92, labels, descriptions, ticks, update);
     days.setTag("analysis_daily_chart");
-    days.select(selected);
-    update.accept(selected);
     daily.addView(days);
     u.gap(daily, 8);
-    daily.addView(detailRow);
+    LinearLayout selection = days.selectionControls(detail, "前一天", "後一天");
+    if (compactControls()) {
+      daily.addView(selection);
+      u.gap(daily, 6);
+      daily.addView(records, new LinearLayout.LayoutParams(-1, -2));
+    } else {
+      LinearLayout actions = u.row();
+      actions.addView(selection, new LinearLayout.LayoutParams(0, -2, 1));
+      records.setPadding(u.d(8), u.d(6), u.d(8), u.d(6));
+      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
+      params.setMarginStart(u.d(6));
+      actions.addView(records, params);
+      daily.addView(actions);
+    }
+    days.select(selected);
 
     if (start.isAfter(first) || chartEnd.isBefore(last)) {
       LocalDate previousEnd = start.minusDays(1);
@@ -522,9 +545,9 @@ public final class AnalysisActivity extends Activity {
   }
 
   private void showRecords(LocalDate from, LocalDate to, String packageName, String label) {
-    if (analysis == null) return;
+    if (analysis == null || loading != null) return;
     if (!analysis.zone.equals(ZoneId.systemDefault())) {
-      loadAnalysis(true);
+      loadAnalysis(false);
       return;
     }
     Bundle state = new Bundle();
@@ -640,7 +663,7 @@ public final class AnalysisActivity extends Activity {
       records.setTag(app.pkg);
       records.setOnClickListener(v -> showRecords(first, last, app.pkg, app.name()));
       trend.setContentDescription("查看 " + app.name() + " 的趨勢");
-      trend.setOnClickListener(v -> selectApp(app.pkg, app.name()));
+      trend.setOnClickListener(v -> selectApp(app.pkg, app.name(), true));
     }
   }
 }
