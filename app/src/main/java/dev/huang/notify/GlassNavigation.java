@@ -29,9 +29,9 @@ import java.util.function.Consumer;
 
 /** A capsule that refracts the page underneath while keeping the navigation controls sharp. */
 final class GlassNavigation extends LinearLayout {
-  private static final String[] PAGES = {"records", "favorites", "settings"};
-  private static final String[] LABELS = {"紀錄", "收藏", "設定"};
-  private static final String[] ICONS = {"bell", "star", "settings"};
+  private static final String[] PAGES = {"records", "favorites", "analysis", "settings"};
+  private static final String[] LABELS = {"紀錄", "收藏", "分析", "設定"};
+  private static final String[] ICONS = {"bell", "star", "analysis", "settings"};
   private final Ui u;
   private final LinearLayout[] tabs = new LinearLayout[PAGES.length];
   private final TextView[] labels = new TextView[PAGES.length];
