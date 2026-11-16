@@ -1,6 +1,7 @@
 package dev.huang.notify;
 
 import android.app.Activity;
+import android.app.DatePickerDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ComponentName;
@@ -10,11 +11,14 @@ import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.OperationCanceledException;
 import android.provider.Settings;
 import android.service.notification.NotificationListenerService;
 import android.text.Editable;
+import android.text.InputFilter;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.text.TextWatcher;
@@ -36,6 +40,7 @@ import org.json.JSONObject;
 /** Native, dependency-light Android UI. Database and encryption never run on the UI thread. */
 public final class MainActivity extends Activity {
   private static final int PAGE_SIZE = 80;
+  private static final int HISTORY_PAGE_SIZE = 20;
   private static final int ANALYSIS_REQUEST = 105;
   private static final int BACKUP_FOLDER = 103, MOVE_BACKUP_FOLDER = 106;
   private static final int[] BACKUP_RETENTION = {3, 7, 14, 30};
@@ -59,10 +64,11 @@ public final class MainActivity extends Activity {
   private FrameLayout root;
   private GlassNavigation nav;
   private LinearLayout content, overview, emptyCard, filterSummary;
-  private View statusDot, clearSearch;
+  private View statusDot, clearSearch, searchFilters;
   private EditText searchInput;
   private TextView statusTitle, statusBody, todayCount, totalCount, starCount;
-  private TextView appFilter, timeFilter, imageFilter, filterRange, sectionTitle, resultCount;
+  private TextView appFilter, timeFilter, imageFilter, historyFilter, filterRange, sectionTitle, resultCount;
+  private View clearAppFilter, clearTimeFilter;
   private TextView emptyTitle, emptyBody, emptyAction, loadMore;
   private ListView list;
   private RecordTimeline adapter;
@@ -77,7 +83,11 @@ public final class MainActivity extends Activity {
       retention = "0",
       lastSaved = "0";
   private long[] counts = {0, 0, 0};
-  private boolean onlyToday, refreshing, resumed, onlyImages, searchPending, keyboardVisible;
+  private boolean onlyToday, refreshing, resumed, onlyImages, includeHistory, searchPending, keyboardVisible;
+  private int recentDays;
+  private CancellationSignal searchRequest;
+  private boolean searchDirty;
+  private DatePickerDialog datePicker;
   private String rangeStart="",rangeEnd="";
   private Bundle analysisReturn, filtersBeforeAnalysis;
   private OnBackInvokedCallback analysisBack;
@@ -194,6 +204,7 @@ public final class MainActivity extends Activity {
   @Override
   protected void onPause() {
     resumed = false;
+    cancelSearch();
     updateFlow.pause();
     backupScreen.pause();
     handler.removeCallbacks(poll);
@@ -209,6 +220,8 @@ public final class MainActivity extends Activity {
       getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(analysisBack);
     }
     updateFlow.destroy();
+    cancelSearch();
+    if (datePicker != null) datePicker.dismiss();
     handler.removeCallbacksAndMessages(null);
     AppDialog.dismissAll(this);
     backupScreen.destroy();
@@ -231,6 +244,8 @@ public final class MainActivity extends Activity {
     b.putString("filter", filterName);
     b.putBoolean("today", onlyToday);
     b.putBoolean("images", onlyImages);
+    b.putBoolean("search_history", includeHistory);
+    b.putInt("recent_days", recentDays);
     b.putString("range_start", rangeStart);
     b.putString("range_end", rangeEnd);
   }
@@ -241,6 +256,8 @@ public final class MainActivity extends Activity {
     filterName = b.getString("filter", "全部 App");
     onlyToday = b.getBoolean("today");
     onlyImages = b.getBoolean("images");
+    includeHistory = b.getBoolean("search_history");
+    recentDays = b.getInt("recent_days");
     rangeStart = b.getString("range_start", "");
     rangeEnd = b.getString("range_end", "");
   }
@@ -294,7 +311,7 @@ public final class MainActivity extends Activity {
     handler.removeCallbacks(searchRefresh);
     searchPending = false;
     limit = PAGE_SIZE;
-    generation++;
+    invalidateResults();
     build();
     refresh();
   }
@@ -417,9 +434,12 @@ public final class MainActivity extends Activity {
     loadMore = u.button("載入更多", false);
     loadMore.setVisibility(View.GONE);
     loadMore.setOnClickListener(v -> {
-      limit += PAGE_SIZE;
-      generation++;
-      refresh();
+      if (hasSearchText()) searchPage(true);
+      else {
+        limit += PAGE_SIZE;
+        generation++;
+        refresh();
+      }
     });
     footer.addView(loadMore);
     list.addFooterView(footer, null, false);
@@ -470,6 +490,7 @@ public final class MainActivity extends Activity {
     searchInput.setTextColor(u.ink);
     searchInput.setHintTextColor(u.muted);
     searchInput.setHint(analysisReturn == null ? "搜尋通知、App 或備註" : "搜尋這些通知");
+    searchInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(SearchQuery.MAX_INPUT)});
     searchInput.setBackgroundColor(Color.TRANSPARENT);
     searchInput.setPaddingRelative(u.d(10), u.d(10), 0, u.d(10));
     searchInput.setMinHeight(u.d(52));
@@ -491,7 +512,7 @@ public final class MainActivity extends Activity {
       public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
       public void onTextChanged(CharSequence s, int start, int before, int count) {
         query = s.toString();
-        generation++;
+        invalidateResults();
         searchPending = true;
         updateFilterControls();
         resultCount.setText("搜尋中…");
@@ -501,24 +522,32 @@ public final class MainActivity extends Activity {
       public void afterTextChanged(Editable e) {}
     });
 
-    if (analysisReturn != null) {
-      appFilter = timeFilter = imageFilter = filterRange = null;
-      filterSummary = null;
-      return;
-    }
     HorizontalScrollView filterStrip = new HorizontalScrollView(this);
+    searchFilters = filterStrip;
     filterStrip.setHorizontalScrollBarEnabled(false);
     filterStrip.setPadding(pageInset(), u.d(7), pageInset(), u.d(2));
     filterStrip.setClipToPadding(false);
     LinearLayout chips = u.row();
     filterStrip.addView(chips);
+    parent.addView(filterStrip);
+    historyFilter = filterChip(chips, this::toggleHistorySearch);
+    historyFilter.setVisibility(View.GONE);
+    if (analysisReturn != null) {
+      appFilter = timeFilter = imageFilter = filterRange = null;
+      filterSummary = null;
+      return;
+    }
     appFilter = filterChip(chips, this::chooseApp);
+    clearAppFilter = addFilterClear(chips, "清除 App 篩選", () -> {
+      filterPkg = null;
+      filterName = "全部 App";
+    });
     timeFilter = filterChip(chips, this::dateFilterDialog);
+    clearTimeFilter = addFilterClear(chips, "清除日期篩選", this::clearDates);
     imageFilter = filterChip(chips, () -> {
       onlyImages = !onlyImages;
       filtersChanged();
     });
-    parent.addView(filterStrip);
 
     filterSummary = u.row();
     filterSummary.setPadding(pageInset(), 0, pageInset(), 0);
@@ -549,6 +578,16 @@ public final class MainActivity extends Activity {
       action.run();
     });
     return chip;
+  }
+
+  private View addFilterClear(LinearLayout parent, String name, Runnable clear) {
+    View button = u.iconButton("close", name, u.muted, () -> {
+      clear.run();
+      filtersChanged();
+    });
+    parent.addView(button, new LinearLayout.LayoutParams(u.d(48), u.d(48)));
+    button.setVisibility(View.GONE);
+    return button;
   }
 
   private void buildResultsHeader(LinearLayout header, boolean favorites) {
@@ -640,11 +679,19 @@ public final class MainActivity extends Activity {
   }
 
   private boolean hasFilters() {
-    return !query.trim().isEmpty() || hasFilterOptions();
+    return hasSearchText() || hasFilterOptions();
+  }
+
+  private boolean hasSearchText() {
+    return SearchQuery.hasText(query);
+  }
+
+  private boolean hasDateFilter() {
+    return onlyToday || recentDays > 0 || !rangeStart.isEmpty();
   }
 
   private boolean hasFilterOptions() {
-    return filterPkg != null || onlyToday || onlyImages || !rangeStart.isEmpty();
+    return filterPkg != null || hasDateFilter() || onlyImages;
   }
 
   private void updateOverviewVisibility() {
@@ -654,17 +701,24 @@ public final class MainActivity extends Activity {
   private void updateFilterControls() {
     if (list == null) return;
     clearSearch.setVisibility(query.isEmpty() ? View.INVISIBLE : View.VISIBLE);
+    boolean searching = hasSearchText();
+    historyFilter.setVisibility(searching ? View.VISIBLE : View.GONE);
+    updateChip(historyFilter, includeHistory ? "包含更新歷程 ✓" : "包含更新歷程", includeHistory);
+    searchFilters.setVisibility(searching || analysisReturn == null ? View.VISIBLE : View.GONE);
     if (analysisReturn != null) {
-      sectionTitle.setText(query.trim().isEmpty() ? "通知清單" : "搜尋結果");
+      sectionTitle.setText(searching ? "搜尋結果" : "通知清單");
       return;
     }
     updateChip(appFilter, filterName + " ▾", filterPkg != null);
-    updateChip(timeFilter, onlyToday ? "今天 ▾" : rangeStart.isEmpty() ? "所有日期 ▾" : "自訂日期 ▾",
-        onlyToday || !rangeStart.isEmpty());
+    String dateLabel = onlyToday ? "今天" : recentDays > 0 ? "最近 " + recentDays + " 天"
+        : rangeStart.isEmpty() ? "所有日期" : "自訂日期";
+    updateChip(timeFilter, dateLabel + " ▾", hasDateFilter());
+    clearAppFilter.setVisibility(filterPkg == null ? View.GONE : View.VISIBLE);
+    clearTimeFilter.setVisibility(hasDateFilter() ? View.VISIBLE : View.GONE);
     updateChip(imageFilter, onlyImages ? "有圖片 ✓" : "只看有圖片", onlyImages);
     String title = page.equals("favorites") ? "已收藏通知" : "所有通知";
-    if (hasFilterOptions()) title = "篩選結果";
-    else if (!query.trim().isEmpty()) title = "搜尋結果";
+    if (searching) title = "搜尋結果";
+    else if (hasFilterOptions()) title = "篩選結果";
     sectionTitle.setText(title);
     filterSummary.setVisibility(hasFilterOptions() ? View.VISIBLE : View.GONE);
     filterRange.setText(rangeStart.isEmpty() ? "已套用篩選" : rangeStart + " ～ " + rangeEnd);
@@ -679,20 +733,44 @@ public final class MainActivity extends Activity {
   }
 
   private void resetFilters() {
-    onlyToday = onlyImages = false;
-    rangeStart = rangeEnd = "";
+    clearDates();
+    onlyImages = false;
     filterPkg = null;
     filterName = "全部 App";
-    searchInput.setText("");
     hideKeyboard();
     filtersChanged();
+  }
+
+  private void clearDates() {
+    onlyToday = false;
+    recentDays = 0;
+    rangeStart = rangeEnd = "";
+  }
+
+  private void toggleHistorySearch() {
+    includeHistory = !includeHistory;
+    hideKeyboard();
+    filtersChanged();
+  }
+
+  private void invalidateResults() {
+    generation++;
+    searchDirty = false;
+    cancelSearch();
+  }
+
+  private void cancelSearch() {
+    if (searchRequest == null) return;
+    searchRequest.cancel();
+    searchRequest = null;
+    if (loadMore != null) loadMore.setEnabled(true);
   }
 
   private void reloadRecords() {
     limit = PAGE_SIZE;
     if (list != null) {
       list.smoothScrollToPositionFromTop(0, 0, 0);
-      resultCount.setText("讀取中…");
+      resultCount.setText(hasSearchText() ? "搜尋中…" : "讀取中…");
       if (rows.isEmpty()) showEmpty("正在讀取通知", "", null, null);
     }
     refresh();
@@ -701,7 +779,7 @@ public final class MainActivity extends Activity {
   private void filtersChanged() {
     handler.removeCallbacks(searchRefresh);
     searchPending = false;
-    generation++;
+    invalidateResults();
     updateFilterControls();
     reloadRecords();
   }
@@ -810,14 +888,14 @@ public final class MainActivity extends Activity {
     end.setInputType(start.getInputType());
     LinearLayout dates = u.column();
     dates.setPadding(0, u.d(14), 0, 0);
-    dates.addView(u.text("開始日期", 13, u.muted, false));
-    dates.addView(start);
+    addDateField(dates, "開始日期", start);
     u.gap(dates, 8);
-    dates.addView(u.text("結束日期", 13, u.muted, false));
-    dates.addView(end);
+    addDateField(dates, "結束日期", end);
 
-    int[] selected = {onlyToday ? 1 : rangeStart.isEmpty() ? 0 : 2};
-    String[] labels = {"所有日期", "今天", "自訂日期"};
+    int customOption = 4;
+    int[] selected = {onlyToday ? 1 : recentDays == 7 ? 2 : recentDays == 30 ? 3
+        : rangeStart.isEmpty() ? 0 : customOption};
+    String[] labels = {"所有日期", "今天", "最近 7 天", "最近 30 天", "自訂日期"};
     AppDialog.Toggle[] options = new AppDialog.Toggle[labels.length];
     for (int i = 0; i < options.length; i++) {
       int index = i;
@@ -830,17 +908,17 @@ public final class MainActivity extends Activity {
       option.setOnClickListener(v -> {
         selected[0] = index;
         for (int j = 0; j < options.length; j++) options[j].setChecked(j == index);
-        dates.setVisibility(index == 2 ? View.VISIBLE : View.GONE);
+        dates.setVisibility(index == customOption ? View.VISIBLE : View.GONE);
       });
     }
-    dates.setVisibility(selected[0] == 2 ? View.VISIBLE : View.GONE);
+    dates.setVisibility(selected[0] == customOption ? View.VISIBLE : View.GONE);
     body.addView(dates);
 
     AppDialog dialog = new AppDialog.Builder(this).setTitle("日期範圍").setView(body)
         .setNegativeButton("取消", null).setPositiveButton("套用", null).create();
     dialog.setOnShowListener(d -> dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
       String first = start.getText().toString().trim(), last = end.getText().toString().trim();
-      boolean custom = selected[0] == 2;
+      boolean custom = selected[0] == customOption;
       if (custom) {
         try {
           RecordFilters.bounds(first, last, ZoneId.systemDefault());
@@ -853,6 +931,7 @@ public final class MainActivity extends Activity {
         }
       }
       onlyToday = selected[0] == 1;
+      recentDays = selected[0] == 2 ? 7 : selected[0] == 3 ? 30 : 0;
       rangeStart = custom ? first : "";
       rangeEnd = custom ? last : "";
       dialog.dismiss();
@@ -861,30 +940,71 @@ public final class MainActivity extends Activity {
     dialog.show();
   }
 
+  private void addDateField(LinearLayout fields, String label, EditText edit) {
+    fields.addView(u.text(label, 13, u.muted, false));
+    LinearLayout row = u.row();
+    row.addView(edit, new LinearLayout.LayoutParams(0, -2, 1));
+    View calendar = u.iconButton("calendar", "用日曆選擇" + label, u.accent, () -> pickDate(edit));
+    row.addView(calendar, new LinearLayout.LayoutParams(u.d(48), u.d(48)));
+    fields.addView(row);
+  }
+
+  private void pickDate(EditText input) {
+    LocalDate date;
+    try {
+      date = LocalDate.parse(input.getText().toString().trim());
+      if (date.isBefore(RecordFilters.MIN_DATE) || date.isAfter(RecordFilters.MAX_DATE)) date = LocalDate.now();
+    } catch (java.time.DateTimeException error) {
+      date = LocalDate.now();
+    }
+    ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
+        .hideSoftInputFromWindow(input.getWindowToken(), 0);
+    datePicker = new DatePickerDialog(this, (view, year, month, day) -> {
+      input.setError(null);
+      input.setText(LocalDate.of(year, month + 1, day).toString());
+    }, date.getYear(), date.getMonthValue() - 1, date.getDayOfMonth());
+    ZoneId zone = ZoneId.systemDefault();
+    datePicker.getDatePicker().setMinDate(RecordFilters.MIN_DATE.atStartOfDay(zone).toInstant().toEpochMilli());
+    datePicker.getDatePicker().setMaxDate(RecordFilters.MAX_DATE.atStartOfDay(zone).toInstant().toEpochMilli());
+    datePicker.setOnDismissListener(dialog -> datePicker = null);
+    datePicker.show();
+  }
+
+  private long[] currentDateBounds() {
+    ZoneId zone = ZoneId.systemDefault();
+    if (onlyToday || recentDays > 0) {
+      LocalDate today = LocalDate.now(zone);
+      return RecordFilters.recentBounds(today, onlyToday ? 1 : recentDays, zone);
+    }
+    return RecordFilters.bounds(rangeStart, rangeEnd, zone);
+  }
+
   private void refresh() {
     if (isFinishing() || isDestroyed()) return;
     updateHeader();
-    if (refreshing || searchPending) return;
+    if (searchPending) return;
+    boolean searching = list != null && hasSearchText();
+    if (searching && (displayedGeneration != generation || (searchDirty && rows.size() <= PAGE_SIZE))) {
+      searchPage(false);
+    }
+    if (refreshing) return;
 
     refreshing = true;
     int gen = generation;
-    String q = query, pkg = filterPkg;
+    String pkg = filterPkg;
     boolean settings = page.equals("settings") || page.equals("backup");
     boolean favorites = page.equals("favorites"), images = onlyImages;
-    ZoneId zone = ZoneId.systemDefault();
-    String today = LocalDate.now(zone).toString();
-    long[] bounds = RecordFilters.bounds(onlyToday ? today : rangeStart,
-        onlyToday ? today : rangeEnd, zone);
+    long[] bounds = currentDateBounds();
     int amount = limit;
     Store.IO.execute(() -> {
       try {
         Store store = Store.get(this);
         long[] numbers = store.counts();
         List<String[]> sources = store.apps();
-        List<Record> records = settings ? Collections.emptyList()
-            : store.listFiltered(q, pkg, favorites, bounds[0], bounds[1], images, amount + 1);
+        List<Record> records = settings || searching ? Collections.emptyList()
+            : store.listFiltered("", pkg, favorites, bounds[0], bounds[1], images, amount + 1);
         long exactCount = records.size() > amount && !favorites && !images
-            && q.trim().isEmpty() && bounds[1] != -1
+            && bounds[1] != -1
             ? store.countInScope(pkg, bounds[0], bounds[1]) : -1;
         String savedPaused = store.setting("paused", "0");
         String savedRetention = store.setting("retention", "0");
@@ -893,6 +1013,7 @@ public final class MainActivity extends Activity {
         runOnUiThread(() -> {
           refreshing = false;
           if (isDestroyed()) return;
+          boolean recordsChanged = numbers[0] != counts[0] || !savedTime.equals(lastSaved);
           counts = numbers;
           apps = sources;
           if (!recordingSaving) paused = savedPaused;
@@ -904,8 +1025,10 @@ public final class MainActivity extends Activity {
             refresh();
           } else if (settings) {
             if (storageSummary != null) storageSummary.setText(format(counts[0]) + " 則通知 · " + size);
-          } else {
-            showResults(records, amount, gen, exactCount);
+          } else if (!searching) {
+            showResults(records, amount, gen, exactCount, false, null);
+          } else if (recordsChanged) {
+            searchDirty = true;
           }
         });
       } catch (Exception e) {
@@ -925,16 +1048,65 @@ public final class MainActivity extends Activity {
     });
   }
 
-  private void showResults(List<Record> records, int amount, int gen, long exactCount) {
+  private void searchPage(boolean append) {
+    if (!resumed || searchPending || searchRequest != null || list == null || !hasSearchText()) return;
+    if (append && (displayedGeneration != generation || rows.isEmpty())) return;
+    CancellationSignal request = new CancellationSignal();
+    searchRequest = request;
+    if (!append) searchDirty = false;
+    loadMore.setEnabled(false);
+    int gen = generation;
+    SearchQuery terms = new SearchQuery(query);
+    String pkg = filterPkg;
+    boolean favorites = page.equals("favorites"), images = onlyImages, history = includeHistory;
+    long[] dates = currentDateBounds();
+    Record after = append ? rows.get(rows.size() - 1) : null;
+    Store.SEARCH.execute(() -> {
+      try {
+        List<Record> result = Store.get(this).search(terms, pkg, favorites, dates[0], dates[1], images,
+            history, after, PAGE_SIZE + 1, request);
+        runOnUiThread(() -> {
+          if (searchRequest != request) return;
+          searchRequest = null;
+          loadMore.setEnabled(true);
+          showResults(result, PAGE_SIZE, gen, -1, append, terms);
+        });
+      } catch (OperationCanceledException ignored) {
+        // A newer search or a page change owns the results now.
+      } catch (RuntimeException error) {
+        runOnUiThread(() -> {
+          if (searchRequest != request) return;
+          searchRequest = null;
+          loadMore.setEnabled(true);
+          if (append) {
+            toast("無法載入更多結果，請重試");
+          } else {
+            rows.clear();
+            displayedGeneration = gen;
+            adapter.notifyDataSetChanged();
+            loadMore.setVisibility(View.GONE);
+            emptyCard.setVisibility(View.VISIBLE);
+            resultCount.setText("搜尋失敗");
+            showEmpty("無法搜尋通知", "", "重試", () -> searchPage(false));
+          }
+        });
+      }
+    });
+  }
+
+  private void showResults(List<Record> records, int amount, int gen, long exactCount,
+      boolean append, SearchQuery terms) {
     boolean more = records.size() > amount;
     if (more) records.remove(records.size() - 1);
-    rows.clear();
+    if (!append) rows.clear();
     rows.addAll(records);
     displayedGeneration = gen;
     loadMore.setVisibility(more ? View.VISIBLE : View.GONE);
     emptyCard.setVisibility(rows.isEmpty() ? View.VISIBLE : View.GONE);
     if (rows.isEmpty()) {
-      if (analysisReturn != null) {
+      if (terms != null && !includeHistory) {
+        showEmpty("找不到符合的通知", "也可以搜尋通知更新前的文字。", "搜尋更新歷程", this::toggleHistorySearch);
+      } else if (analysisReturn != null) {
         showEmpty("找不到符合的通知", "可調整關鍵字，或返回分析切換範圍。", null, null);
       } else if (hasFilters()) {
         showEmpty("找不到符合的通知", "試試其他關鍵字、App 或日期。", null, null);
@@ -948,6 +1120,7 @@ public final class MainActivity extends Activity {
     }
     resultCount.setText(exactCount >= 0 ? format(exactCount) + " 則"
         : format(rows.size()) + (more ? "+" : "") + " 則");
+    adapter.setSearch(terms);
     adapter.notifyDataSetChanged();
   }
 
@@ -986,15 +1159,19 @@ public final class MainActivity extends Activity {
     if (loadingDetail || AppDialog.hasOpen(this)) return;
     loadingDetail = true;
     int requestedGeneration = generation;
-    Store.IO.execute(
+    SearchQuery terms = hasSearchText() ? new SearchQuery(query) : null;
+    Store.SEARCH.execute(
         () -> {
           try {
-            JSONArray versions = Store.get(this).versions(r.id);
-            JSONArray images = Store.get(this).recordImages(r.id);
+            Store store = Store.get(this);
+            JSONObject match = r.historyMatch == null ? null : store.version(r.id, r.historyMatch.id);
+            JSONArray versions = store.versionsPage(r.id, null, HISTORY_PAGE_SIZE + 1,
+                match == null ? null : match.getString("id"));
+            JSONArray images = store.recordImages(r.id);
             runOnUiThread(() -> {
               loadingDetail = false;
               if (resumed && requestedGeneration == generation && !AppDialog.hasOpen(this)) {
-                showDetail(r, versions, images);
+                showDetail(r, versions, images, match, terms);
               }
             });
           } catch (Exception e) {
@@ -1006,7 +1183,8 @@ public final class MainActivity extends Activity {
         });
   }
 
-  private void showDetail(Record record, JSONArray versions, JSONArray images) {
+  private void showDetail(Record record, JSONArray versions, JSONArray images, JSONObject match,
+      SearchQuery terms) {
     if (isDestroyed() || isFinishing()) return;
     ScrollView scroll = new ScrollView(this);
     scroll.setClipToPadding(false);
@@ -1027,8 +1205,11 @@ public final class MainActivity extends Activity {
     source.addView(sourceText, sourceParams);
     body.addView(source);
 
+    if (match != null) addVersion(detailPanel(body, "命中的更新歷程"), match, terms);
+
     u.gap(body, 13);
     TextView title = u.text(record.title.isEmpty() ? "無標題的通知" : record.title, 23, u.ink, true);
+    if (terms != null) title.setText(terms.highlight(title.getText().toString(), u.pale));
     title.setTextIsSelectable(true);
     u.heading(title);
     body.addView(title);
@@ -1063,6 +1244,7 @@ public final class MainActivity extends Activity {
 
     LinearLayout message = detailPanel(body, "通知內容");
     TextView text = u.text(record.text.isEmpty() ? "來源 App 未提供文字內容。" : record.text, 16, u.ink, false);
+    if (terms != null) text.setText(terms.highlight(text.getText().toString(), u.pale));
     text.setTextIsSelectable(true);
     text.setLineSpacing(u.d(4), 1);
     message.addView(text);
@@ -1070,6 +1252,7 @@ public final class MainActivity extends Activity {
 
     LinearLayout notes = detailPanel(body, "備註");
     TextView noteText = u.text(noteSummary(record), 15, u.ink, false);
+    if (terms != null) noteText.setText(terms.highlight(noteText.getText().toString(), u.pale));
     noteText.setTextIsSelectable(true);
     notes.addView(noteText);
     u.gap(notes, 8);
@@ -1077,18 +1260,11 @@ public final class MainActivity extends Activity {
     editNote.setOnClickListener(v -> editNote(record, noteText));
     notes.addView(editNote);
 
-    if (versions.length() > 1) {
-      LinearLayout history = detailPanel(body, "更新歷程 · " + versions.length() + " 個版本");
-      for (int i = 0; i < versions.length(); i++) {
-        JSONObject version = versions.optJSONObject(i);
-        if (i > 0) u.gap(history, 12);
-        history.addView(u.text(date(version.optLong("time"), "MM/dd HH:mm:ss"), 12, u.accent, true));
-        TextView versionText = u.text(version.optString("title") + "\n" + version.optString("body"), 14, u.ink, false);
-        versionText.setTextIsSelectable(true);
-        history.addView(versionText);
-        ImageGallery.add(this, u, history, version.optJSONArray("images"),
-            version.optString("image_status", "none"), false);
-      }
+    if (versions.length() > 1 || (match != null && versions.length() == 1)) {
+      int total = Math.max(record.versions, versions.length() + (match == null ? 0 : 1));
+      LinearLayout history = detailPanel(body, (match == null ? "更新歷程 · " : "其他版本 · ")
+          + format(total - (match == null ? 0 : 1)) + " 個版本");
+      showHistoryPage(history, record.id, match == null ? null : match.optString("id"), versions, false);
     }
 
     Intent launch = getPackageManager().getLaunchIntentForPackage(record.pkg);
@@ -1121,6 +1297,49 @@ public final class MainActivity extends Activity {
               if (saved) detail.dismiss();
             }))
         .show());
+  }
+
+  private void addVersion(LinearLayout parent, JSONObject version, SearchQuery search) {
+    parent.addView(u.text(date(version.optLong("time"), "yyyy/MM/dd HH:mm:ss"), 12, u.accent, true));
+    String content = version.optString("title") + "\n" + version.optString("body");
+    TextView text = u.text(content, 14, u.ink, false);
+    if (search != null) text.setText(search.highlight(content, u.pale));
+    text.setTextIsSelectable(true);
+    parent.addView(text);
+    ImageGallery.add(this, u, parent, version.optJSONArray("images"),
+        version.optString("image_status", "none"), false);
+  }
+
+  private void showHistoryPage(LinearLayout panel, String record, String exclude, JSONArray versions,
+      boolean append) {
+    int visible = Math.min(versions.length(), HISTORY_PAGE_SIZE);
+    for (int i = 0; i < visible; i++) {
+      if (append || i > 0) u.gap(panel, 12);
+      addVersion(panel, versions.optJSONObject(i), null);
+    }
+    if (versions.length() <= HISTORY_PAGE_SIZE) return;
+    TextView more = u.button("載入更多歷程", false);
+    panel.addView(more);
+    String before = versions.optJSONObject(visible - 1).optString("id");
+    more.setOnClickListener(view -> {
+      more.setEnabled(false);
+      Store.SEARCH.execute(() -> {
+        try {
+          JSONArray next = Store.get(this).versionsPage(record, before, HISTORY_PAGE_SIZE + 1, exclude);
+          runOnUiThread(() -> {
+            if (!panel.isAttachedToWindow()) return;
+            panel.removeView(more);
+            showHistoryPage(panel, record, exclude, next, true);
+          });
+        } catch (Exception error) {
+          runOnUiThread(() -> {
+            if (!panel.isAttachedToWindow()) return;
+            more.setEnabled(true);
+            toast("無法讀取更多歷程");
+          });
+        }
+      });
+    });
   }
 
   private LinearLayout detailPanel(LinearLayout parent, String label) {
@@ -1750,6 +1969,8 @@ public final class MainActivity extends Activity {
         filterPkg = data.getStringExtra(AnalysisActivity.PACKAGE);
         filterName = filterPkg == null ? "全部 App" : data.getStringExtra(AnalysisActivity.APP_NAME);
         onlyToday = onlyImages = false;
+        includeHistory = false;
+        recentDays = 0;
         query = "";
         page = "records";
         updateBackAction();
@@ -1803,7 +2024,7 @@ public final class MainActivity extends Activity {
         if (isDestroyed()) return;
         if (finished != null) finished.accept(saved);
         if (saved) {
-          generation++;
+          invalidateResults();
           refresh();
           if (message != null) toast(message);
         } else {

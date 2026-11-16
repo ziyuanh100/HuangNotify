@@ -41,6 +41,20 @@ public final class UpgradeHarness extends android.test.InstrumentationTestRunner
     try {
       android.content.Context c=getTargetContext();
       if(phase.startsWith("interrupt-")){BackupProcessHarness.run(this,phase);return;}
+      if (phase.equals("search-benchmark")) {
+        SearchBenchmark.run(c);
+        Bundle report = new Bundle();
+        report.putString("search_benchmark", "PASS: 400,000 and 2,000,000 historical versions");
+        finish(Activity.RESULT_OK, report);
+        return;
+      }
+      if (phase.equals("history-limit")) {
+        HistoryBackupTest.verifyHistoryLimit(c);
+        Bundle report = new Bundle();
+        report.putString("backup_history", "PASS: 2,000,000 versions accepted, 2,000,001 rejected");
+        finish(Activity.RESULT_OK, report);
+        return;
+      }
       if(phase.equals("benchmark")) {
         BackupBenchmark.run(c,benchmarkKind,benchmarkSize,message->{Bundle status=new Bundle();status.putString("benchmark_progress",message);sendStatus(0,status);});
         Bundle report=new Bundle();report.putString("benchmark","PASS: completed exact-capacity export and restore");finish(Activity.RESULT_OK,report);return;

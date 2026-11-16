@@ -27,15 +27,15 @@ public class HistoryBackupTest extends AndroidTestCase {
   @Override protected void setUp() throws Exception {
     super.setUp();
     store = Store.get(getContext());
-    clearRecords();
+    clearRecords(store);
   }
 
   @Override protected void tearDown() throws Exception {
-    try { clearRecords(); }
+    try { clearRecords(store); }
     finally { super.tearDown(); }
   }
 
-  private void clearRecords() {
+  private static void clearRecords(Store store) {
     SQLiteDatabase db = store.getWritableDatabase();
     db.delete("records", null, null);
     db.delete("settings", null, null);
@@ -58,7 +58,7 @@ public class HistoryBackupTest extends AndroidTestCase {
         assertTrue(session.readyBytes < BackupStreamCrypto.MAX_FILE_BYTES);
         BackupFiles.save(context, session, Uri.parse(document), export);
       }
-      clearRecords();
+      clearRecords(store);
       BackupTask restore = new BackupTask();
       try (BackupFiles.Session session = BackupFiles.read(context, Uri.parse(document), restore)) {
         assertTrue(session.encrypted);
@@ -93,20 +93,22 @@ public class HistoryBackupTest extends AndroidTestCase {
     }
   }
 
-  public void testTwoMillionHistoryEntriesRestoreAndRejectOneMore() throws Exception {
+  static void verifyHistoryLimit(Context context) throws Exception {
     int limit = 2_000_000;
     int recordCount = 2000;
-    File dir = new File(getContext().getCacheDir(), "history-limit-" + UUID.randomUUID());
+    Store store = Store.get(context);
+    clearRecords(store);
+    File dir = new File(context.getCacheDir(), "history-limit-" + UUID.randomUUID());
     assertTrue(dir.mkdir());
     try {
-      seedCompactVersions(recordCount, limit);
+      seedCompactVersions(store, recordCount, limit);
       File json = new File(dir, "limit.json");
       try (FileOutputStream output = new FileOutputStream(json)) {
         BackupArchive.write(store.getReadableDatabase(), output, new BackupTask());
       }
       assertTrue(json.length() < BackupStreamCrypto.MAX_BYTES);
 
-      clearRecords();
+      clearRecords(store);
       File staging = new File(dir, "stage.db");
       try (BackupArchive.Stage stage = BackupArchive.read(json, staging, new BackupTask())) {
         assertEquals(limit, stage.versions);
@@ -137,10 +139,11 @@ public class HistoryBackupTest extends AndroidTestCase {
       assertEquals(limit + 1L, store.storageUsage().historyCount);
     } finally {
       BackupFiles.erase(dir);
+      clearRecords(store);
     }
   }
 
-  private void seedCompactVersions(int recordCount, int versions) {
+  static void seedCompactVersions(Store store, int recordCount, int versions) {
     SQLiteDatabase db = store.getWritableDatabase();
     String sequence = "WITH RECURSIVE numbers(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM numbers WHERE n+1<?) ";
     String recordId = "printf('00000000-0000-0001-0000-%012x', ";

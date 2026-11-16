@@ -37,8 +37,8 @@ public class ImageUiTest extends ActivityInstrumentationTestCase2<MainActivity> 
   public void testDetailGalleryViewerZoomAndSaveCopy() throws Exception {
     main=getActivity(); getInstrumentation().waitForIdleSync();
     org.json.JSONArray versions=Store.IO.submit(()->Store.get(main).versions(record.id)).get(); org.json.JSONArray images=Store.IO.submit(()->Store.get(main).recordImages(record.id)).get();
-    java.lang.reflect.Method detail=MainActivity.class.getDeclaredMethod("showDetail",Record.class,org.json.JSONArray.class,org.json.JSONArray.class); detail.setAccessible(true);
-    getInstrumentation().runOnMainSync(()->{try {detail.invoke(main,record,versions,images);}catch(Exception e){throw new RuntimeException(e);}});
+    java.lang.reflect.Method detail=MainActivity.class.getDeclaredMethod("showDetail",Record.class,org.json.JSONArray.class,org.json.JSONArray.class,org.json.JSONObject.class,SearchQuery.class); detail.setAccessible(true);
+    getInstrumentation().runOnMainSync(()->{try {detail.invoke(main,record,versions,images,null,null);}catch(Exception e){throw new RuntimeException(e);}});
     Store.IO.submit(()->{}).get(); getInstrumentation().waitForIdleSync();
     java.lang.reflect.Field open=AppDialog.class.getDeclaredField("OPEN"); open.setAccessible(true);
     @SuppressWarnings("unchecked") Map<android.content.Context,List<AppDialog>> dialogs=(Map<android.content.Context,List<AppDialog>>)open.get(null);

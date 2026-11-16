@@ -260,6 +260,12 @@ final class Ui {
           path.moveTo(12, 7); path.lineTo(12, 12); path.lineTo(15, 14);
           c.drawPath(path, p);
           break;
+        case "calendar":
+          c.drawRoundRect(3, 5, 21, 21, 2, 2, p);
+          c.drawLine(7, 3, 7, 8, p);
+          c.drawLine(17, 3, 17, 8, p);
+          c.drawLine(3, 11, 21, 11, p);
+          break;
         case "apps":
           c.drawRoundRect(4, 4, 10, 10, 1.5f, 1.5f, p);
           c.drawRoundRect(14, 4, 20, 10, 1.5f, 1.5f, p);

@@ -7,6 +7,11 @@ final class RecordFilters {
   static final LocalDate MIN_DATE = LocalDate.of(1970, 1, 1);
   static final LocalDate MAX_DATE = LocalDate.of(2999, 12, 31);
 
+  static long[] recentBounds(LocalDate today, int days, ZoneId zone) {
+    return new long[]{today.minusDays(days - 1).atStartOfDay(zone).toInstant().toEpochMilli(),
+        today.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()};
+  }
+
   static long[] bounds(String start,String end,ZoneId zone){
     if(start.isEmpty()&&end.isEmpty())return new long[]{-1,-1};
     if(!start.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")||!end.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}"))throw new IllegalArgumentException("請輸入 YYYY-MM-DD 格式日期");
