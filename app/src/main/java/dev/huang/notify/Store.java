@@ -254,15 +254,15 @@ public final class Store extends SQLiteOpenHelper {
   private static String recordScope(String pkg, long start, long end, List<String> args) {
     String where = "1=1";
     if (pkg != null) {
-      where += " AND pkg=?";
+      where += " AND pkg=?" + (args.size() + 1);
       args.add(pkg);
     }
     if (start != -1) {
-      where += " AND first_seen>=?";
+      where += " AND first_seen>=?" + (args.size() + 1);
       args.add(Long.toString(start));
     }
     if (end != -1) {
-      where += " AND first_seen<?";
+      where += " AND first_seen<?" + (args.size() + 1);
       args.add(Long.toString(end));
     }
     return where;
@@ -303,7 +303,7 @@ public final class Store extends SQLiteOpenHelper {
     List<String> args = new ArrayList<>();
     String where = filteredScope(pkg, start, end, favorite, images, args);
     if (after != null) {
-      where += " AND (r.first_seen,r.id)<(?,?)";
+      where += " AND (r.first_seen,r.id)<(?" + (args.size() + 1) + ",?" + (args.size() + 2) + ")";
       args.add(Long.toString(after.firstSeen));
       args.add(after.id);
     }
@@ -316,7 +316,7 @@ public final class Store extends SQLiteOpenHelper {
     String match = current;
     if (history) {
       columns += ", hit.id AS matched_id,hit.time AS matched_time,hit.title AS matched_title,hit.body AS matched_body";
-      // One indexed lookup per record, and only for records whose current fields do not match.
+      // This join precedes the scope's WHERE clause. Explicit parameter numbers keep its bindings stable.
       from += " LEFT JOIN versions hit ON hit.id=CASE WHEN (" + current + ") THEN NULL ELSE ("
           + "SELECT v.id FROM versions v WHERE v.record_id=r.id AND " + query.predicate("v", firstPattern)
           + " ORDER BY v.time DESC,v.rowid DESC LIMIT 1) END";
