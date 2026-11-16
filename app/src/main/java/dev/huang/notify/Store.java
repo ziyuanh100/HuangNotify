@@ -17,9 +17,15 @@ import java.util.concurrent.Executors;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-/** All disk work runs on IO, including listener events, export and restore. */
+/** Writes use IO. Cancellable searches use a separate reader on the WAL database. */
 public final class Store extends SQLiteOpenHelper {
   public static final ExecutorService IO = Executors.newSingleThreadExecutor();
+  static final ExecutorService SEARCH = Executors.newSingleThreadExecutor();
+  private static final String RECORD_COLUMNS = "r.*, "
+      + "(SELECT COUNT(*) FROM versions v WHERE v.record_id=r.id) AS version_count, "
+      + "(SELECT COUNT(*) FROM record_images ri WHERE ri.record_id=r.id) AS image_count";
+  private static final String HAS_IMAGES = " AND (EXISTS(SELECT 1 FROM record_images i WHERE i.record_id=r.id)"
+      + " OR EXISTS(SELECT 1 FROM versions v JOIN version_images i ON i.version_id=v.id WHERE v.record_id=r.id))";
   private static volatile Store instance;
   public static volatile String error = "";
 
@@ -248,23 +254,29 @@ public final class Store extends SQLiteOpenHelper {
   private static String recordScope(String pkg, long start, long end, List<String> args) {
     String where = "1=1";
     if (pkg != null) {
-      where += " AND pkg=?";
+      where += " AND pkg=?" + (args.size() + 1);
       args.add(pkg);
     }
     if (start != -1) {
-      where += " AND first_seen>=?";
+      where += " AND first_seen>=?" + (args.size() + 1);
       args.add(Long.toString(start));
     }
     if (end != -1) {
-      where += " AND first_seen<?";
+      where += " AND first_seen<?" + (args.size() + 1);
       args.add(Long.toString(end));
     }
     return where;
   }
 
+  private static String filteredScope(String pkg, long start, long end, boolean favorite,
+      boolean images, List<String> args) {
+    return recordScope(pkg, start, end, args) + (favorite ? " AND r.favorite=1" : "")
+        + (images ? HAS_IMAGES : "");
+  }
+
   List<Record> listFiltered(String query,String pkg,boolean favorite,long start,long end,boolean images,int limit) {
     List<String> args = new ArrayList<>();
-    String where = recordScope(pkg, start, end, args);
+    String where = filteredScope(pkg, start, end, favorite, images, args);
     if (!query.trim().isEmpty()) {
       where +=
           " AND (title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' OR app LIKE ? ESCAPE '\\' OR"
@@ -272,19 +284,58 @@ public final class Store extends SQLiteOpenHelper {
       String term = EventPolicy.likePattern(query);
       for (int i = 0; i < 4; i++) args.add(term);
     }
-    if (favorite) where += " AND favorite=1";
-    if(images)where+=" AND (EXISTS(SELECT 1 FROM record_images i WHERE i.record_id=r.id) OR EXISTS(SELECT 1 FROM versions v JOIN version_images i ON i.version_id=v.id WHERE v.record_id=r.id))";
     List<Record> result = new ArrayList<>();
     try (Cursor c =
         getReadableDatabase()
             .rawQuery(
-                "SELECT r.*, (SELECT COUNT(*) FROM versions v WHERE v.record_id=r.id) AS"
-                    + " version_count, (SELECT COUNT(*) FROM record_images ri WHERE ri.record_id=r.id) AS image_count FROM records r WHERE "
-                    + where
+                "SELECT " + RECORD_COLUMNS + " FROM records r WHERE " + where
                     + " ORDER BY first_seen DESC,id DESC LIMIT "
                     + limit,
                 args.toArray(new String[0]))) {
       while (c.moveToNext()) result.add(record(c));
+    }
+    return result;
+  }
+
+  List<Record> search(SearchQuery query, String pkg, boolean favorite, long start, long end,
+      boolean images, boolean history, Record after, int limit, CancellationSignal signal) {
+    signal.throwIfCanceled();
+    List<String> args = new ArrayList<>();
+    String where = filteredScope(pkg, start, end, favorite, images, args);
+    if (after != null) {
+      where += " AND (r.first_seen,r.id)<(?" + (args.size() + 1) + ",?" + (args.size() + 2) + ")";
+      args.add(Long.toString(after.firstSeen));
+      args.add(after.id);
+    }
+
+    int firstPattern = args.size() + 1;
+    String current = query.predicate("r", firstPattern);
+    query.addPatterns(args);
+    String columns = RECORD_COLUMNS;
+    String from = " FROM records r";
+    String match = current;
+    if (history) {
+      columns += ", hit.id AS matched_id,hit.time AS matched_time,hit.title AS matched_title,hit.body AS matched_body";
+      // This join precedes the scope's WHERE clause. Explicit parameter numbers keep its bindings stable.
+      from += " LEFT JOIN versions hit ON hit.id=CASE WHEN (" + current + ") THEN NULL ELSE ("
+          + "SELECT v.id FROM versions v WHERE v.record_id=r.id AND " + query.predicate("v", firstPattern)
+          + " ORDER BY v.time DESC,v.rowid DESC LIMIT 1) END";
+      match = "hit.id IS NOT NULL OR (" + current + ")";
+    }
+    List<Record> result = new ArrayList<>();
+    try (Cursor cursor = getReadableDatabase().rawQuery("SELECT " + columns + from + " WHERE " + where
+        + " AND (" + match + ") ORDER BY r.first_seen DESC,r.id DESC LIMIT " + limit,
+        args.toArray(new String[0]), signal)) {
+      while (cursor.moveToNext()) {
+        signal.throwIfCanceled();
+        Record row = record(cursor);
+        if (history) {
+          String id = s(cursor, "matched_id");
+          if (id != null) row.historyMatch = new Record.HistoryMatch(id, s(cursor, "matched_title"),
+              s(cursor, "matched_body"), l(cursor, "matched_time"));
+        }
+        result.add(row);
+      }
     }
     return result;
   }
@@ -382,22 +433,43 @@ public final class Store extends SQLiteOpenHelper {
   }
 
   public JSONArray versions(String id) throws Exception {
+    return versionsPage(id, null, -1, null);
+  }
+
+  JSONArray versionsPage(String id, String before, int limit, String exclude) throws Exception {
     JSONArray result = new JSONArray();
-    try (Cursor c =
-        getReadableDatabase()
-            .rawQuery(
-                "SELECT * FROM versions WHERE record_id=? ORDER BY time DESC,rowid DESC", new String[] {id})) {
-      while (c.moveToNext())
-        result.put(
-            new JSONObject()
-                .put("id", s(c, "id"))
-                .put("time", l(c, "time"))
-                .put("title", s(c, "title"))
-                .put("body", s(c, "body"))
-                .put("image_status",s(c,"image_status"))
-                .put("images",new JSONArray(imageHashes("version_images","version_id",s(c,"id")))));
+    List<String> args = new ArrayList<>();
+    args.add(id);
+    String sql = "SELECT * FROM versions WHERE record_id=?";
+    if (exclude != null) {
+      sql += " AND id<>?";
+      args.add(exclude);
+    }
+    if (before != null) {
+      sql += " AND (time,rowid)<(SELECT time,rowid FROM versions WHERE id=? AND record_id=?)";
+      args.add(before);
+      args.add(id);
+    }
+    try (Cursor c = getReadableDatabase().rawQuery(sql + " ORDER BY time DESC,rowid DESC LIMIT " + limit,
+        args.toArray(new String[0]))) {
+      while (c.moveToNext()) result.put(versionJson(c));
     }
     return result;
+  }
+
+  JSONObject version(String record, String id) throws Exception {
+    try (Cursor cursor = getReadableDatabase().rawQuery("SELECT * FROM versions WHERE id=? AND record_id=?",
+        new String[]{id, record})) {
+      return cursor.moveToFirst() ? versionJson(cursor) : null;
+    }
+  }
+
+  private JSONObject versionJson(Cursor cursor) throws Exception {
+    String id = s(cursor, "id");
+    return new JSONObject().put("id", id).put("time", l(cursor, "time"))
+        .put("title", s(cursor, "title")).put("body", s(cursor, "body"))
+        .put("image_status", s(cursor, "image_status"))
+        .put("images", new JSONArray(imageHashes("version_images", "version_id", id)));
   }
 
   public void favorite(String id, boolean value) {

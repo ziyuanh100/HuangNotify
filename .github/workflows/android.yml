@@ -12,7 +12,7 @@ on:
 permissions:
   contents: read
 env:
-  PREVIOUS_VERSION: v1.6.2
+  PREVIOUS_VERSION: v1.6.3
 jobs:
   build:
     if: "inputs.benchmark_only != true && !contains(github.event.head_commit.message, '[performance-only]')"
@@ -128,6 +128,47 @@ jobs:
           path: |
             upgrade-*
             backup-interrupt-*
+
+  large-data-tests:
+    if: "inputs.benchmark_only != true && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Compile test APKs
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: |
+            adb install app/build/outputs/apk/debug/app-debug.apk
+            adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            bash .github/scripts/search-performance.sh
+            adb shell am instrument -w -e phase history-limit dev.huang.notify.test/dev.huang.notify.UpgradeHarness > backup-history-limit.txt
+            grep -q 'INSTRUMENTATION_CODE: -1' backup-history-limit.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: search-and-history-limit-api-35
+          path: |
+            search-performance.*
+            backup-history-limit.txt
 
   backup-performance:
     name: backup-performance (${{ matrix.kind }})

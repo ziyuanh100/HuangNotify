@@ -19,6 +19,7 @@ import java.util.Locale;
 /** Recycled notification cards with a heading on the first record of each local day. */
 final class RecordTimeline extends BaseAdapter {
   private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm", Locale.TAIWAN);
+  private static final DateTimeFormatter MATCH_TIME = DateTimeFormatter.ofPattern("M/d HH:mm", Locale.TAIWAN);
   private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("M月d日", Locale.TAIWAN);
   private static final DateTimeFormatter OLDER = DateTimeFormatter.ofPattern("uuuu年M月d日", Locale.TAIWAN);
   private final Ui u;
@@ -26,6 +27,7 @@ final class RecordTimeline extends BaseAdapter {
   private final int inset;
   private ZoneId zone;
   private LocalDate today;
+  private SearchQuery search;
 
   RecordTimeline(Ui u, List<Record> records, int inset) {
     this.u = u;
@@ -37,6 +39,8 @@ final class RecordTimeline extends BaseAdapter {
   @Override public int getCount() { return records.size(); }
   @Override public Record getItem(int position) { return records.get(position); }
   @Override public long getItemId(int position) { return position; }
+
+  void setSearch(SearchQuery query) { search = query; }
 
   @Override public void notifyDataSetChanged() {
     updateDate();
@@ -64,13 +68,21 @@ final class RecordTimeline extends BaseAdapter {
     }
 
     card.icon.setImageDrawable(u.appIcon(record.pkg));
-    card.source.setText(record.app);
+    card.source.setText(displayText(record.app));
     card.time.setText(TIME.format(time));
     card.bookmark.setVisibility(record.favorite ? View.VISIBLE : View.GONE);
-    card.title.setText(record.title.isEmpty() ? "無標題的通知" : record.title);
-    card.body.setText(record.text);
-    card.body.setVisibility(record.text.isEmpty() ? View.GONE : View.VISIBLE);
+    Record.HistoryMatch match = record.historyMatch;
+    String title = match == null ? record.title : match.title;
+    String body = match == null ? record.text : match.body;
+    card.title.setText(displayText(title.isEmpty() ? "無標題的通知" : title));
+    card.body.setText(displayText(body));
+    card.body.setVisibility(body.isEmpty() ? View.GONE : View.VISIBLE);
+    boolean showNote = search != null && search.matchesField(record.note);
+    card.note.setVisibility(showNote ? View.VISIBLE : View.GONE);
+    if (showNote) card.note.setText(search.highlight("備註 · " + search.excerpt(record.note), u.pale));
     StringBuilder meta = new StringBuilder();
+    if (match != null) meta.append("更新歷程 · ")
+        .append(MATCH_TIME.format(Instant.ofEpochMilli(match.time).atZone(zone))).append(" · ");
     if (record.favorite) meta.append("已收藏 · ");
     if (record.active && CaptureService.connected) meta.append("仍在通知列");
     else if (record.removed > 0) meta.append("已移除 · 紀錄已保存");
@@ -78,13 +90,17 @@ final class RecordTimeline extends BaseAdapter {
     if (record.imageCount > 0) meta.append(" · ").append(record.imageCount).append(" 張圖片");
     else if (!"none".equals(record.imageStatus)) meta.append(" · 圖片未保存");
     if (record.versions > 1) meta.append(" · ").append(record.versions).append(" 個版本");
-    if (!record.note.isEmpty()) meta.append(" · 有備註");
+    if (!showNote && !record.note.isEmpty()) meta.append(" · 有備註");
     card.meta.setText(meta);
     return card;
   }
 
+  private CharSequence displayText(String text) {
+    return search == null ? text : search.highlight(search.excerpt(text), u.pale);
+  }
+
   private final class Card extends LinearLayout {
-    final TextView heading, source, time, title, body, meta;
+    final TextView heading, source, time, title, body, note, meta;
     final ImageView icon;
     final View bookmark;
 
@@ -143,6 +159,12 @@ final class RecordTimeline extends BaseAdapter {
       body.setMaxLines(2);
       body.setEllipsize(TextUtils.TruncateAt.END);
       copy.addView(body);
+
+      note = u.text("", 13, u.muted, false);
+      note.setPadding(0, u.d(4), 0, 0);
+      note.setMaxLines(2);
+      note.setEllipsize(TextUtils.TruncateAt.END);
+      copy.addView(note);
 
       meta = u.text("", 12, u.accent, false);
       meta.setPadding(0, u.d(7), 0, 0);
