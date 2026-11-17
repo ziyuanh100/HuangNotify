@@ -52,13 +52,15 @@ public final class AppDialog extends Dialog {
     requestWindowFeature(Window.FEATURE_NO_TITLE);
     LinearLayout card = u.column();
     card.setPadding(u.d(20), u.d(12), u.d(20), u.d(14));
-    card.setBackground(u.outline(u.surface, 28));
-    View handle = new View(getContext()); handle.setBackground(u.shape(u.line, 3));
-    LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(u.d(36), u.d(4));
-    hp.gravity = Gravity.CENTER_HORIZONTAL; hp.bottomMargin = u.d(13); card.addView(handle, hp);
-    TextView title = u.text(spec.title, 22, u.ink, true);
+    card.setBackground(u.outline(u.surface, 24));
+    LinearLayout heading = u.row();
+    TextView title = u.text(spec.title, 21, u.ink, true);
     u.heading(title);
-    card.addView(title); u.gap(card, 14);
+    heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+    View close = u.iconButton("close", "關閉" + spec.title, u.muted, this::cancel);
+    heading.addView(close, new LinearLayout.LayoutParams(u.d(48), u.d(48)));
+    card.addView(heading);
+    u.gap(card, 12);
     if (spec.message != null) {
       TextView message = u.text(spec.message, 15, u.muted, false); message.setLineSpacing(u.d(4), 1);
       card.addView(message); u.gap(card, 16);
@@ -107,7 +109,7 @@ public final class AppDialog extends Dialog {
         super.onMeasure(width, MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST));
       }
     };
-    scroll.setFillViewport(false); scroll.setClipToOutline(true); scroll.setBackground(u.shape(u.surface, 28));
+    scroll.setFillViewport(false); scroll.setClipToOutline(true); scroll.setBackground(u.shape(u.surface, 24));
     if (spec.expanded) setContentView(card);
     else { scroll.addView(card); setContentView(scroll); }
     setCanceledOnTouchOutside(true);

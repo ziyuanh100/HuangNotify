@@ -217,6 +217,27 @@ public class AnalysisUiTest extends ActivityInstrumentationTestCase2<MainActivit
     click(option);
   }
 
+  public void testAnalysisTabKeepsPeriodAndAppWhenSwitchingDestinations() throws Exception {
+    main = getActivity();
+    dashboard = startDashboard(() -> click(main.getWindow().getDecorView().findViewWithTag("nav_analysis")));
+    awaitText(dashboard, "App 排行");
+    choosePeriod("近 30 天");
+    chooseApp("全部 App ▾", ALPHA);
+    awaitText(dashboard, "甲 App ▾");
+    click(dashboard.getWindow().getDecorView().findViewWithTag("nav_favorites"));
+    awaitText(main, "收藏通知");
+    dashboard = startDashboard(() -> click(main.getWindow().getDecorView().findViewWithTag("nav_analysis")));
+    awaitText(dashboard, "近 30 天 ▾");
+    awaitText(dashboard, "甲 App ▾");
+    assertTrue(dashboard.getWindow().getDecorView().findViewWithTag("nav_analysis").isSelected());
+    click(await(dashboard, v -> "analysis_clear_app".equals(v.getTag()), "clear App filter"));
+    awaitText(dashboard, "全部 App ▾");
+    awaitText(dashboard, "近 30 天 ▾");
+    capture("experience-analysis.png");
+    click(dashboard.getWindow().getDecorView().findViewWithTag("nav_settings"));
+    awaitText(main, "偏好設定");
+  }
+
   private void chooseApp(String current, String target) throws Exception {
     click(awaitText(dashboard, current));
     AppDialog picker = activeDialog(dashboard);

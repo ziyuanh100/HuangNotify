@@ -15,6 +15,7 @@ import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.OperationCanceledException;
+import android.os.Parcelable;
 import android.provider.Settings;
 import android.service.notification.NotificationListenerService;
 import android.text.Editable;
@@ -89,7 +90,11 @@ public final class MainActivity extends Activity {
   private boolean searchDirty;
   private DatePickerDialog datePicker;
   private String rangeStart="",rangeEnd="";
-  private Bundle analysisReturn, filtersBeforeAnalysis;
+  private Bundle analysisReturn, filtersBeforeAnalysis, dashboardState;
+  private Bundle recordTabs = new Bundle();
+  private Parcelable pendingListState;
+  private String analysisOrigin = "records";
+  private boolean openingAnalysis;
   private OnBackInvokedCallback analysisBack;
   private int limit = PAGE_SIZE, generation, displayedGeneration = -1;
   BackupScreen backupScreen;
@@ -121,6 +126,12 @@ public final class MainActivity extends Activity {
       analysisReturn = state.getBundle("analysis_return");
       filtersBeforeAnalysis = state.getBundle("filters_before_analysis");
       settingsScrollY = state.getInt("settings_scroll");
+      dashboardState = state.getBundle("dashboard_state");
+      analysisOrigin = state.getString("analysis_origin", "records");
+      Bundle tabs = state.getBundle("record_tabs");
+      if (tabs != null) recordTabs = tabs;
+      pendingListState = state.getParcelable("list_position");
+      limit = Math.max(PAGE_SIZE, state.getInt("list_limit", PAGE_SIZE));
     }
     getWindow().setStatusBarColor(u.bg);
     getWindow().setNavigationBarColor(u.bg);
@@ -157,8 +168,8 @@ public final class MainActivity extends Activity {
     if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
     setContentView(root);
     if (getIntent().getBooleanExtra("open_updates",false)) {
-      page="settings";
       endAnalysisDrill();
+      page="settings";
     }
     updateBackAction();
     UpgradeManager.reconcile(this);
@@ -236,6 +247,12 @@ public final class MainActivity extends Activity {
     b.putBundle("analysis_return", analysisReturn);
     b.putBundle("filters_before_analysis", filtersBeforeAnalysis);
     b.putInt("settings_scroll", settingsScroll == null ? settingsScrollY : settingsScroll.getScrollY());
+    rememberTab();
+    b.putBundle("record_tabs", recordTabs);
+    b.putBundle("dashboard_state", dashboardState);
+    b.putString("analysis_origin", analysisOrigin);
+    b.putParcelable("list_position", list == null ? pendingListState : list.onSaveInstanceState());
+    b.putInt("list_limit", Math.max(limit, rows.size()));
   }
 
   private void saveRecordFilters(Bundle b) {
@@ -264,7 +281,7 @@ public final class MainActivity extends Activity {
 
   private void updateBackAction() {
     if (Build.VERSION.SDK_INT < 33) return;
-    boolean handlesBack = analysisReturn != null || page.equals("backup");
+    boolean handlesBack = analysisReturn != null || !page.equals("records");
     if (handlesBack && analysisBack == null) {
       analysisBack = this::onBackPressed;
       getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
@@ -278,31 +295,73 @@ public final class MainActivity extends Activity {
   @Override public void onBackPressed() {
     if (page.equals("backup")) openPage("settings");
     else if (analysisReturn != null) launchAnalysis();
+    else if (!page.equals("records")) openPage("records");
     else super.onBackPressed();
   }
 
+  private boolean isRecordPage() {
+    return page.equals("records") || page.equals("favorites");
+  }
+
+  private void rememberTab() {
+    if (!isRecordPage() || analysisReturn != null) return;
+    Bundle state = new Bundle();
+    saveRecordFilters(state);
+    state.putInt("limit", Math.max(limit, rows.size()));
+    state.putParcelable("position", pendingListState != null ? pendingListState
+        : list == null ? null : list.onSaveInstanceState());
+    recordTabs.putBundle(page, state);
+  }
+
+  private void restoreTab() {
+    pendingListState = null;
+    limit = PAGE_SIZE;
+    if (!isRecordPage()) return;
+    Bundle state = recordTabs.getBundle(page);
+    restoreRecordFilters(state == null ? new Bundle() : state);
+    if (state != null) {
+      limit = Math.max(PAGE_SIZE, state.getInt("limit", PAGE_SIZE));
+      pendingListState = state.getParcelable("position");
+    }
+  }
+
   private void endAnalysisDrill() {
-    if (filtersBeforeAnalysis != null) restoreRecordFilters(filtersBeforeAnalysis);
+    if (analysisReturn != null) {
+      page = analysisOrigin;
+      restoreTab();
+      if (filtersBeforeAnalysis != null) restoreRecordFilters(filtersBeforeAnalysis);
+    }
     analysisReturn = filtersBeforeAnalysis = null;
     updateBackAction();
   }
 
   private void launchAnalysis() {
+    if (openingAnalysis) return;
+    openingAnalysis = true;
     hideKeyboard();
-    Intent intent = new Intent(this, AnalysisActivity.class);
     if (analysisReturn != null) {
-      intent.putExtra(AnalysisActivity.DASHBOARD_STATE, analysisReturn);
+      dashboardState = analysisReturn;
       endAnalysisDrill();
       rebuildPage();
+    } else {
+      rememberTab();
+      analysisOrigin = page;
     }
+    Intent intent = new Intent(this, AnalysisActivity.class);
+    if (dashboardState != null) intent.putExtra(AnalysisActivity.DASHBOARD_STATE, dashboardState);
     startActivityForResult(intent, ANALYSIS_REQUEST);
+    overridePendingTransition(0, 0);
   }
 
   private void openPage(String nextPage) {
-    if (page.equals(nextPage)) return;
+    if (nextPage.equals("analysis")) { launchAnalysis(); return; }
+    if (page.equals(nextPage) && analysisReturn == null) return;
     hideKeyboard();
+    boolean wasDrilling = analysisReturn != null;
     endAnalysisDrill();
+    if (!wasDrilling) rememberTab();
     page = nextPage;
+    restoreTab();
     updateBackAction();
     rebuildPage();
   }
@@ -310,14 +369,13 @@ public final class MainActivity extends Activity {
   private void rebuildPage() {
     handler.removeCallbacks(searchRefresh);
     searchPending = false;
-    limit = PAGE_SIZE;
     invalidateResults();
     build();
     refresh();
   }
 
   private int pageInset() {
-    return u.d(Math.max(16, (getResources().getConfiguration().screenWidthDp - 680) / 2));
+    return u.pageInset();
   }
 
   private void build() {
@@ -376,21 +434,10 @@ public final class MainActivity extends Activity {
   }
 
   private void pageTitle(LinearLayout parent, String title, String icon) {
-    LinearLayout bar = u.row();
-    bar.setPadding(pageInset(), u.d(10), pageInset(), u.d(12));
-    FrameLayout mark = u.iconTile(icon, u.lime, u.hero, 15);
-    bar.addView(mark, new LinearLayout.LayoutParams(u.d(44), u.d(44)));
-    LinearLayout text = u.column();
-    TextView brand = u.text("HuangNotify", 12, u.muted, true);
-    brand.setLetterSpacing(.06f);
-    text.addView(brand);
-    TextView heading = u.text(title, 26, u.ink, true);
-    u.heading(heading);
-    text.addView(heading);
-    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -2, 1);
-    params.setMarginStart(u.d(12));
-    bar.addView(text, params);
-    parent.addView(bar);
+    String subtitle = page.equals("settings") ? "依照你的習慣，管理記錄與資料"
+        : page.equals("favorites") ? "重要的通知，留在這裡"
+        : analysisReturn != null ? null : "收下通知，隨時找回";
+    parent.addView(u.pageHeader(title, subtitle, null));
   }
 
   private void buildRecords() {
@@ -403,6 +450,7 @@ public final class MainActivity extends Activity {
     buildSearch(chrome);
 
     list = new ListView(this);
+    list.setTag("records_list");
     list.setDivider(null);
     list.setItemsCanFocus(true);
     list.setClipToPadding(false);
@@ -413,7 +461,7 @@ public final class MainActivity extends Activity {
     // Give the list room in landscape, split screen, and other short windows.
     float fontScale = getResources().getConfiguration().fontScale;
     int height = getResources().getConfiguration().screenHeightDp;
-    if (height > 0 && height < (fontScale >= 1.5f ? 560 : 420)) {
+    if (fontScale >= 1.5f || (height > 0 && height < 520)) {
       list.addHeaderView(chrome, null, false);
     } else {
       content.addView(chrome);
@@ -522,14 +570,11 @@ public final class MainActivity extends Activity {
       public void afterTextChanged(Editable e) {}
     });
 
-    HorizontalScrollView filterStrip = new HorizontalScrollView(this);
-    searchFilters = filterStrip;
-    filterStrip.setHorizontalScrollBarEnabled(false);
-    filterStrip.setPadding(pageInset(), u.d(7), pageInset(), u.d(2));
-    filterStrip.setClipToPadding(false);
-    LinearLayout chips = u.row();
-    filterStrip.addView(chips);
-    parent.addView(filterStrip);
+    FilterFlow chips = new FilterFlow(u);
+    chips.setTag("search_filters");
+    searchFilters = chips;
+    chips.setPadding(pageInset(), u.d(8), pageInset(), u.d(2));
+    parent.addView(chips, new LinearLayout.LayoutParams(-1, -2));
     historyFilter = filterChip(chips, this::toggleHistorySearch);
     historyFilter.setVisibility(View.GONE);
     if (analysisReturn != null) {
@@ -562,7 +607,7 @@ public final class MainActivity extends Activity {
     parent.addView(filterSummary);
   }
 
-  private TextView filterChip(LinearLayout parent, Runnable action) {
+  private TextView filterChip(ViewGroup parent, Runnable action) {
     TextView chip = u.button("", false);
     chip.setTextSize(13);
     chip.setMinHeight(u.d(48));
@@ -570,9 +615,7 @@ public final class MainActivity extends Activity {
     chip.setMaxWidth(u.d(190));
     chip.setMaxLines(2);
     chip.setEllipsize(TextUtils.TruncateAt.END);
-    LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, -2);
-    if (parent.getChildCount() > 0) params.setMarginStart(u.d(6));
-    parent.addView(chip, params);
+    parent.addView(chip, new ViewGroup.LayoutParams(-2, -2));
     chip.setOnClickListener(v -> {
       hideKeyboard();
       action.run();
@@ -580,22 +623,19 @@ public final class MainActivity extends Activity {
     return chip;
   }
 
-  private View addFilterClear(LinearLayout parent, String name, Runnable clear) {
+  private View addFilterClear(ViewGroup parent, String name, Runnable clear) {
     View button = u.iconButton("close", name, u.muted, () -> {
       clear.run();
       filtersChanged();
     });
-    parent.addView(button, new LinearLayout.LayoutParams(u.d(48), u.d(48)));
+    button.setMinimumWidth(u.d(48));
+    button.setMinimumHeight(u.d(48));
+    parent.addView(button, new ViewGroup.LayoutParams(u.d(48), u.d(48)));
     button.setVisibility(View.GONE);
     return button;
   }
 
   private void buildResultsHeader(LinearLayout header, boolean favorites) {
-    if (!favorites && analysisReturn == null) {
-      TextView analysis = u.button("通知分析", false);
-      analysis.setOnClickListener(v -> launchAnalysis());
-      header.addView(analysis);
-    }
     LinearLayout section = u.row();
     section.setPadding(u.d(2), u.d(6), u.d(2), u.d(5));
     sectionTitle = u.text("", 19, u.ink, true);
@@ -605,6 +645,14 @@ public final class MainActivity extends Activity {
     resultCount.setPadding(u.d(10), u.d(4), u.d(10), u.d(4));
     resultCount.setBackground(u.shape(u.pale, 12));
     section.addView(resultCount);
+    if (!favorites && analysisReturn == null) {
+      TextView analysis = u.quietButton("通知分析");
+      analysis.setTextSize(13);
+      analysis.setOnClickListener(v -> launchAnalysis());
+      analysis.setPadding(u.d(10), u.d(8), 0, u.d(8));
+      if (!u.compact()) section.addView(analysis);
+      else header.addView(analysis);
+    }
     header.addView(section);
 
     emptyCard = u.column();
@@ -632,48 +680,48 @@ public final class MainActivity extends Activity {
   private LinearLayout recordingOverview() {
     LinearLayout card = u.column();
     card.setPadding(u.d(14), u.d(12), u.d(14), u.d(15));
-    card.setBackground(u.shape(u.hero, 24));
+    card.setBackground(u.outline(u.surface, Ui.CARD_RADIUS));
 
     LinearLayout status = u.row();
     LinearLayout statusText = u.column();
     LinearLayout caption = u.row();
     statusDot = new View(this);
-    statusDot.setBackground(u.shape(u.heroMuted, 8));
+    statusDot.setBackground(u.shape(u.muted, 8));
     LinearLayout.LayoutParams dot = new LinearLayout.LayoutParams(u.d(8), u.d(8));
     dot.setMarginEnd(u.d(7));
     caption.addView(statusDot, dot);
-    caption.addView(u.text("通知記錄", 12, u.heroMuted, true));
+    caption.addView(u.text("通知記錄", 12, u.muted, true));
     statusText.addView(caption);
     u.gap(statusText, 3);
-    statusTitle = u.text("讀取記錄狀態…", 20, u.heroInk, true);
+    statusTitle = u.text("讀取記錄狀態…", 18, u.ink, true);
     statusText.addView(statusTitle);
-    statusBody = u.text("", 12, u.heroMuted, false);
+    statusBody = u.text("", 12, u.muted, false);
     statusText.addView(statusBody);
-    u.ripple(statusText, u.hero, 10);
+    u.ripple(statusText, Color.TRANSPARENT, 10);
     statusText.setFocusable(true);
     statusText.setOnClickListener(v -> accessDialog());
     status.addView(statusText, new LinearLayout.LayoutParams(0, -2, 1));
-    status.addView(recordSwitch(true));
+    status.addView(recordSwitch(false));
     card.addView(status);
     u.gap(card, 11);
     View line = new View(this);
-    line.setBackgroundColor(u.heroLine);
+    line.setBackgroundColor(u.line);
     card.addView(line, new LinearLayout.LayoutParams(-1, u.d(1)));
     u.gap(card, 10);
     LinearLayout stats = u.row();
     stats.setGravity(Gravity.TOP);
-    todayCount = addStat(stats, "今日新增", counts[1], u.lime);
-    totalCount = addStat(stats, "目前保存", counts[0], u.heroInk);
-    starCount = addStat(stats, "已收藏", counts[2], u.heroInk);
+    todayCount = addStat(stats, "今日新增", counts[1], u.accent);
+    totalCount = addStat(stats, "目前保存", counts[0], u.ink);
+    starCount = addStat(stats, "已收藏", counts[2], u.ink);
     card.addView(stats);
     return card;
   }
 
   private TextView addStat(LinearLayout parent, String label, long value, int color) {
     LinearLayout stat = u.column();
-    TextView number = u.text(format(value), 24, color, true);
+    TextView number = u.text(format(value), 22, color, true);
     stat.addView(number);
-    stat.addView(u.text(label, 12, u.heroMuted, false));
+    stat.addView(u.text(label, 12, u.muted, false));
     parent.addView(stat, new LinearLayout.LayoutParams(0, -2, 1));
     return number;
   }
@@ -726,10 +774,7 @@ public final class MainActivity extends Activity {
   }
 
   private void updateChip(TextView chip, String text, boolean selected) {
-    chip.setText(text);
-    chip.setSelected(selected);
-    chip.setTextColor(selected ? u.accent : u.muted);
-    u.ripple(chip, selected ? u.pale : u.surface, 16);
+    u.chip(chip, text, selected);
   }
 
   private void resetFilters() {
@@ -767,6 +812,7 @@ public final class MainActivity extends Activity {
   }
 
   private void reloadRecords() {
+    pendingListState = null;
     limit = PAGE_SIZE;
     if (list != null) {
       list.smoothScrollToPositionFromTop(0, 0, 0);
@@ -838,7 +884,7 @@ public final class MainActivity extends Activity {
     if (statusTitle == null) return;
 
     String title, body;
-    int color = u.heroMuted;
+    int color = u.muted;
     if (recordingSaving) {
       title = "正在儲存設定…";
       body = "";
@@ -851,20 +897,20 @@ public final class MainActivity extends Activity {
     } else if (!access) {
       title = "等待通知存取權";
       body = "點此設定，開始保存通知";
-      color = u.warning;
+      color = u.danger;
     } else if (!Store.error.isEmpty()) {
       title = "記錄需要處理";
       body = Store.error;
-      color = u.warning;
+      color = u.danger;
     } else if (CaptureService.connected) {
       title = "正在記錄";
       body = lastSaved.equals("0") ? "準備好接收下一則通知"
           : "最近保存 " + date(parseLong(lastSaved), "MM/dd HH:mm");
-      color = u.lime;
+      color = u.accent;
     } else {
       title = "等待服務連線";
       body = "點此檢查權限與重新連線";
-      color = u.warning;
+      color = u.danger;
     }
     statusDot.setBackgroundTintList(android.content.res.ColorStateList.valueOf(color));
     statusTitle.setText(title);
@@ -1061,15 +1107,16 @@ public final class MainActivity extends Activity {
     boolean favorites = page.equals("favorites"), images = onlyImages, history = includeHistory;
     long[] dates = currentDateBounds();
     Record after = append ? rows.get(rows.size() - 1) : null;
+    int amount = append ? PAGE_SIZE : limit;
     Store.SEARCH.execute(() -> {
       try {
         List<Record> result = Store.get(this).search(terms, pkg, favorites, dates[0], dates[1], images,
-            history, after, PAGE_SIZE + 1, request);
+            history, after, amount + 1, request);
         runOnUiThread(() -> {
           if (searchRequest != request) return;
           searchRequest = null;
           loadMore.setEnabled(true);
-          showResults(result, PAGE_SIZE, gen, -1, append, terms);
+          showResults(result, amount, gen, -1, append, terms);
         });
       } catch (OperationCanceledException ignored) {
         // A newer search or a page change owns the results now.
@@ -1109,7 +1156,9 @@ public final class MainActivity extends Activity {
       } else if (analysisReturn != null) {
         showEmpty("找不到符合的通知", "可調整關鍵字，或返回分析切換範圍。", null, null);
       } else if (hasFilters()) {
-        showEmpty("找不到符合的通知", "試試其他關鍵字、App 或日期。", null, null);
+        showEmpty("找不到符合的通知", "試試其他關鍵字、App 或日期。",
+            hasFilterOptions() ? "清除篩選" : "清除搜尋",
+            hasFilterOptions() ? this::resetFilters : () -> searchInput.setText(""));
       } else if (page.equals("favorites")) {
         showEmpty("還沒有收藏", "打開一則通知，點選「加入收藏」。", "查看通知紀錄", () -> openPage("records"));
       } else if (!hasAccess()) {
@@ -1122,6 +1171,10 @@ public final class MainActivity extends Activity {
         : format(rows.size()) + (more ? "+" : "") + " 則");
     adapter.setSearch(terms);
     adapter.notifyDataSetChanged();
+    if (pendingListState != null) {
+      list.onRestoreInstanceState(pendingListState);
+      pendingListState = null;
+    }
   }
 
   private void showEmpty(String title, String message, String action, Runnable callback) {
@@ -1494,14 +1547,7 @@ public final class MainActivity extends Activity {
   private final Runnable backupTick = this::refreshBackupPage;
 
   private void buildBackupPage() {
-    TextView back = u.button("‹  返回設定", false);
-    back.setPadding(u.d(10), 0, u.d(10), 0);
-    back.setOnClickListener(v -> openPage("settings"));
-    LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(-2, -2);
-    backParams.setMarginStart(pageInset());
-    backParams.topMargin = u.d(6);
-    content.addView(back, backParams);
-    pageTitle(content, "備份與儲存", "backup");
+    content.addView(u.pageHeader("備份與儲存", "把重要紀錄安全保存", () -> openPage("settings")));
 
     ScrollView scroll = new ScrollView(this);
     scroll.setFillViewport(true);
@@ -1739,7 +1785,7 @@ public final class MainActivity extends Activity {
     parent.addView(title);
 
     LinearLayout group = u.column();
-    group.setBackground(u.outline(u.surface, 20));
+    group.setBackground(u.outline(u.surface, Ui.CARD_RADIUS));
     group.setClipToOutline(true);
     parent.addView(group, new LinearLayout.LayoutParams(-1, -2));
     return group;
@@ -1958,7 +2004,16 @@ public final class MainActivity extends Activity {
   @Override protected void onActivityResult(int request,int result,Intent data) {
     super.onActivityResult(request,result,data);
     if (request == ANALYSIS_REQUEST) {
-      if (result == RESULT_OK && data != null) {
+      openingAnalysis = false;
+      if (data != null) dashboardState = data.getBundleExtra(AnalysisActivity.DASHBOARD_STATE);
+      if (result == RESULT_OK && data != null && data.hasExtra(AnalysisActivity.NAVIGATION_PAGE)) {
+        String destination = data.getStringExtra(AnalysisActivity.NAVIGATION_PAGE);
+        if ("records".equals(destination) || "favorites".equals(destination) || "settings".equals(destination))
+          openPage(destination);
+      } else if (result == RESULT_OK && data != null && data.hasExtra(AnalysisActivity.FIRST_DATE)) {
+        rememberTab();
+        pendingListState = null;
+        limit = PAGE_SIZE;
         analysisReturn = data.getBundleExtra(AnalysisActivity.DASHBOARD_STATE);
         if (analysisReturn != null) {
           filtersBeforeAnalysis = new Bundle();

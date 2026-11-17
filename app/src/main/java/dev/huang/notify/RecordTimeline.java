@@ -114,39 +114,33 @@ final class RecordTimeline extends BaseAdapter {
       u.heading(heading);
       addView(heading);
 
-      LinearLayout row = u.row();
-      row.setGravity(Gravity.TOP);
-      row.setPadding(u.d(12), u.d(12), u.d(12), u.d(12));
+      LinearLayout row = u.column();
+      row.setPadding(u.d(16), u.d(14), u.d(16), u.d(14));
       row.setBackground(u.outline(u.surface, 20));
       row.setForeground(u.rippleDrawable(null, 20, false));
       row.setDuplicateParentStateEnabled(true);
       addView(row, new LayoutParams(-1, -2));
 
-      FrameLayout tile = new FrameLayout(u.context);
-      tile.setBackground(u.shape(u.pale, 13));
+      LinearLayout top = u.row();
       icon = new ImageView(u.context);
       icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-      tile.addView(icon, new FrameLayout.LayoutParams(u.d(28), u.d(28), Gravity.CENTER));
-      row.addView(tile, new LayoutParams(u.d(42), u.d(42)));
-
-      LinearLayout copy = u.column();
-      LayoutParams copyParams = new LayoutParams(0, -2, 1);
-      copyParams.setMarginStart(u.d(11));
-      row.addView(copy, copyParams);
-      LinearLayout top = u.row();
+      top.addView(icon, new LayoutParams(u.d(24), u.d(24)));
       source = u.text("", 13, u.muted, true);
       source.setSingleLine();
       source.setEllipsize(TextUtils.TruncateAt.END);
       LayoutParams sourceParams = new LayoutParams(0, -2, 1);
-      sourceParams.setMarginEnd(u.d(6));
+      sourceParams.setMargins(u.d(8), 0, u.d(8), 0);
       top.addView(source, sourceParams);
       time = u.text("", 12, u.muted, false);
       top.addView(time);
       bookmark = u.icon("starFilled", u.accent);
       LayoutParams bookmarkParams = new LayoutParams(u.d(16), u.d(16));
-      bookmarkParams.setMarginStart(u.d(5));
+      bookmarkParams.setMarginStart(u.d(6));
       top.addView(bookmark, bookmarkParams);
-      copy.addView(top);
+      row.addView(top);
+      LinearLayout copy = u.column();
+      row.addView(copy, new LayoutParams(-1, -2));
+      u.gap(copy, 6);
 
       title = u.text("", 16, u.ink, true);
       title.setPadding(0, u.d(3), 0, 0);
@@ -166,7 +160,7 @@ final class RecordTimeline extends BaseAdapter {
       note.setEllipsize(TextUtils.TruncateAt.END);
       copy.addView(note);
 
-      meta = u.text("", 12, u.accent, false);
+      meta = u.text("", 12, u.muted, false);
       meta.setPadding(0, u.d(7), 0, 0);
       copy.addView(meta);
     }

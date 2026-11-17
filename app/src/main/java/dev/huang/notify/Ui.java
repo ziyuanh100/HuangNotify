@@ -20,6 +20,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 final class Ui {
+  static final int CARD_RADIUS = 20, CONTROL_RADIUS = 14;
   final Context context;
   final boolean dark;
   final int bg, surface, ink, muted, accent, onAccent, pale, line, danger;
@@ -98,6 +99,61 @@ final class Ui {
     return l;
   }
 
+  int pageInset() {
+    return d(Math.max(20, (context.getResources().getConfiguration().screenWidthDp - 680) / 2));
+  }
+
+  boolean compact() {
+    return context.getResources().getConfiguration().fontScale >= 1.5f
+        || context.getResources().getConfiguration().screenWidthDp < 360;
+  }
+
+  LinearLayout card() {
+    LinearLayout card = column();
+    card.setPadding(d(16), d(16), d(16), d(16));
+    card.setBackground(outline(surface, CARD_RADIUS));
+    return card;
+  }
+
+  LinearLayout pageHeader(String title, String subtitle, Runnable back) {
+    LinearLayout bar = row();
+    bar.setPadding(pageInset(), d(16), pageInset(), d(16));
+    if (back != null) {
+      TextView button = quietButton("返回");
+      button.setContentDescription("返回上一頁");
+      button.setOnClickListener(v -> back.run());
+      LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-2, -2);
+      p.setMarginEnd(d(12));
+      bar.addView(button, p);
+    }
+    LinearLayout labels = column();
+    TextView heading = text(title, 26, ink, true);
+    heading(heading);
+    labels.addView(heading);
+    if (subtitle != null && !subtitle.isEmpty()) {
+      TextView caption = text(subtitle, 13, muted, false);
+      caption.setPadding(0, d(4), 0, 0);
+      labels.addView(caption);
+    }
+    bar.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+    return bar;
+  }
+
+  TextView quietButton(String label) {
+    TextView button = button(label, false);
+    ripple(button, Color.TRANSPARENT, CONTROL_RADIUS);
+    return button;
+  }
+
+  void chip(TextView view, String label, boolean selected) {
+    view.setText(label);
+    view.setSelected(selected);
+    view.setTextColor(selected ? accent : muted);
+    view.setBackground(rippleDrawable(outline(selected ? pale : surface, CONTROL_RADIUS),
+        CONTROL_RADIUS, false));
+    if (android.os.Build.VERSION.SDK_INT >= 30) view.setStateDescription(selected ? "已套用" : "未套用");
+  }
+
   EditText field(String hint) {
     EditText field = new EditText(context);
     field.setTextColor(ink);
@@ -125,7 +181,8 @@ final class Ui {
     b.setGravity(Gravity.CENTER);
     b.setMinHeight(d(50));
     b.setPadding(d(16), d(10), d(16), d(10));
-    ripple(b, primary ? accent : pale, 16);
+    if (primary) ripple(b, accent, CONTROL_RADIUS);
+    else b.setBackground(rippleDrawable(outline(surface, CONTROL_RADIUS), CONTROL_RADIUS, false));
     b.setFocusable(true);
     return b;
   }
@@ -208,6 +265,12 @@ final class Ui {
       p.setStrokeJoin(Paint.Join.ROUND);
       path.reset();
       switch (name) {
+        case "analysis":
+          c.drawLine(4, 20, 20, 20, p);
+          c.drawLine(6, 16, 6, 11, p);
+          c.drawLine(12, 16, 12, 4, p);
+          c.drawLine(18, 16, 18, 8, p);
+          break;
         case "bell":
           path.moveTo(5, 17);
           path.lineTo(7, 14);

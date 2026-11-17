@@ -16,6 +16,7 @@ import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.widget.BaseAdapter;
 import android.widget.ImageView;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
@@ -36,6 +37,7 @@ public final class AnalysisActivity extends Activity {
   static final String FIRST_DATE = "first_date", LAST_DATE = "last_date";
   static final String PACKAGE = "package", APP_NAME = "app_name";
   static final String DASHBOARD_STATE = "dashboard_state";
+  static final String NAVIGATION_PAGE = "navigation_page";
   private static final int TODAY = 0, WEEK = 1, MONTH = 2, CUSTOM = 3;
   private static final int CHART_DAYS = 30;
   private static final String DAILY = "analysis_daily_section";
@@ -50,7 +52,10 @@ public final class AnalysisActivity extends Activity {
   private final NumberFormat percentages = NumberFormat.getPercentInstance(Locale.TAIWAN);
   private Ui u;
   private ListView list;
-  private TextView periodButton, range, scope;
+  private TextView periodButton, range, scope, clearScope, loadingLabel;
+  private GlassNavigation navigation;
+  private View headerChrome;
+  private android.window.OnBackInvokedCallback backAction;
   private LinearLayout body;
   private RankAdapter ranking;
   private NotificationAnalysis analysis;
@@ -93,7 +98,15 @@ public final class AnalysisActivity extends Activity {
     getWindow().getDecorView().setSystemUiVisibility(u.dark ? 0
         : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
     if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
-    root.setOnApplyWindowInsetsListener((view, insets) -> {
+    FrameLayout host = new FrameLayout(this) {
+      @Override public void onDescendantInvalidated(View child, View target) {
+        super.onDescendantInvalidated(child, target);
+        if (child == root && navigation != null) navigation.invalidateBackdrop();
+      }
+    };
+    host.setBackgroundColor(u.bg);
+    host.addView(root, new FrameLayout.LayoutParams(-1, -1));
+    host.setOnApplyWindowInsetsListener((view, insets) -> {
       if (Build.VERSION.SDK_INT >= 30) {
         Insets safe = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
         view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
@@ -104,17 +117,11 @@ public final class AnalysisActivity extends Activity {
       return insets.consumeSystemWindowInsets();
     });
 
-    LinearLayout top = u.row();
-    top.setPadding(u.d(16), u.d(8), u.d(16), u.d(8));
-    TextView back = u.button("返回", false);
-    back.setOnClickListener(v -> finish());
-    top.addView(back);
-    TextView title = u.text("通知分析", 24, u.ink, true);
-    title.setPadding(u.d(14), 0, 0, 0);
-    u.heading(title);
-    top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-    root.addView(top);
-    buildPeriodControls(root);
+    LinearLayout chrome = u.column();
+    chrome.addView(u.pageHeader("通知分析", "從已保存的通知，了解使用習慣", () -> leaveDashboard(null)));
+    buildPeriodControls(chrome);
+    boolean scrollingHeader = u.compact() || getResources().getConfiguration().screenHeightDp < 520;
+    if (!scrollingHeader) root.addView(chrome);
 
     list = new ListView(this);
     list.setTag("analysis_list");
@@ -122,16 +129,51 @@ public final class AnalysisActivity extends Activity {
     list.setSelector(new ColorDrawable(Color.TRANSPARENT));
     list.setItemsCanFocus(true);
     LinearLayout header = u.column();
-    header.setPadding(u.d(16), u.d(4), u.d(16), u.d(12));
+    header.setPadding(0, 0, 0, u.d(12));
+    if (scrollingHeader) {
+      headerChrome = chrome;
+      header.addView(chrome);
+    }
     body = u.column();
+    body.setPadding(u.pageInset(), u.d(4), u.pageInset(), 0);
     header.addView(body);
     list.addHeaderView(header, null, true);
     ranking = new RankAdapter();
     list.setAdapter(ranking);
     root.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
-    setContentView(root);
-    root.requestApplyInsets();
+    list.setClipToPadding(false);
+    list.setVerticalScrollBarEnabled(false);
+    navigation = new GlassNavigation(u, "analysis", page -> {
+      if (!page.equals("analysis")) leaveDashboard(page);
+    });
+    navigation.setPageContent(root);
+    FrameLayout.LayoutParams navParams = new FrameLayout.LayoutParams(-1, -2,
+        Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+    int side = u.d(Math.max(18, (getResources().getConfiguration().screenWidthDp - 480) / 2));
+    navParams.setMargins(side, 0, side, u.d(12));
+    host.addView(navigation, navParams);
+    navigation.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) ->
+        list.setPadding(0, 0, 0, navigation.getHeight() + navParams.bottomMargin + u.d(8)));
+    setContentView(host);
+    host.requestApplyInsets();
+    if (Build.VERSION.SDK_INT >= 33) {
+      backAction = () -> leaveDashboard(null);
+      getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+          android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, backAction);
+    }
   }
+
+  private void leaveDashboard(String page) {
+    Bundle state = new Bundle();
+    saveDashboard(state);
+    Intent result = new Intent().putExtra(DASHBOARD_STATE, state);
+    if (page != null) result.putExtra(NAVIGATION_PAGE, page);
+    setResult(RESULT_OK, result);
+    finish();
+    overridePendingTransition(0, 0);
+  }
+
+  @Override public void onBackPressed() { leaveDashboard(null); }
 
   @Override protected void onResume() {
     super.onResume();
@@ -144,6 +186,8 @@ public final class AnalysisActivity extends Activity {
   }
 
   @Override protected void onDestroy() {
+    if (Build.VERSION.SDK_INT >= 33 && backAction != null)
+      getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backAction);
     AppDialog.dismissAll(this);
     super.onDestroy();
   }
@@ -191,7 +235,7 @@ public final class AnalysisActivity extends Activity {
 
   private void buildPeriodControls(LinearLayout root) {
     LinearLayout controls = u.column();
-    controls.setPadding(u.d(16), 0, u.d(16), u.d(8));
+    controls.setPadding(u.pageInset(), 0, u.pageInset(), u.d(12));
     LinearLayout row = u.row();
     periodButton = u.button("", false);
     periodButton.setOnClickListener(v -> choosePeriod());
@@ -208,6 +252,14 @@ public final class AnalysisActivity extends Activity {
     u.gap(controls, 6);
     range = u.text("", 13, u.muted, true);
     controls.addView(range);
+    clearScope = u.quietButton("清除 App 篩選");
+    clearScope.setTextSize(13);
+    clearScope.setTag("analysis_clear_app");
+    clearScope.setOnClickListener(v -> selectApp(null, null, false));
+    controls.addView(clearScope, new LinearLayout.LayoutParams(-2, -2));
+    loadingLabel = u.text("正在統計通知…", 13, u.muted, false);
+    loadingLabel.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+    controls.addView(loadingLabel);
     root.addView(controls);
   }
 
@@ -267,9 +319,10 @@ public final class AnalysisActivity extends Activity {
     String scopeName = pkg == null ? "全部 App" : appName;
     scope.setText(scopeName + " ▾");
     scope.setContentDescription("依 App 篩選，" + scopeName);
-    scope.setSelected(pkg != null);
-    scope.setTextColor(pkg == null ? u.accent : u.onAccent);
-    u.ripple(scope, pkg == null ? u.pale : u.accent, 16);
+    u.chip(periodButton, PERIODS[period] + " ▾", period != WEEK);
+    u.chip(scope, scopeName + " ▾", pkg != null);
+    clearScope.setVisibility(pkg == null ? View.GONE : View.VISIBLE);
+    loadingLabel.setVisibility(View.VISIBLE);
     body.setAlpha(body.getChildCount() == 0 ? 1f : .5f);
     if (body.getChildCount() == 0) body.addView(u.text("正在統計通知…", 15, u.muted, false));
 
@@ -287,6 +340,7 @@ public final class AnalysisActivity extends Activity {
         runOnUiThread(() -> {
           if (!isCurrent(request)) return;
           loading = null;
+          loadingLabel.setVisibility(View.INVISIBLE);
           analysis = result;
           render(apps);
           restoreScroll();
@@ -297,6 +351,7 @@ public final class AnalysisActivity extends Activity {
         runOnUiThread(() -> {
           if (!isCurrent(request)) return;
           loading = null;
+          loadingLabel.setVisibility(View.INVISIBLE);
           analysis = null;
           body.setAlpha(1f);
           ranking.setApps(Collections.emptyList());
@@ -327,7 +382,8 @@ public final class AnalysisActivity extends Activity {
         View header = (View) body.getParent();
         header.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
-        int top = header.getPaddingTop() + body.getPaddingTop();
+        int top = header.getPaddingTop() + body.getPaddingTop()
+            + (headerChrome == null ? 0 : headerChrome.getMeasuredHeight());
         int index = body.indexOfChild(section);
         for (int i = 0; i < index; i++) {
           top += body.getChildAt(i).getMeasuredHeight();
@@ -347,19 +403,17 @@ public final class AnalysisActivity extends Activity {
     body.removeAllViews();
     body.setAlpha(1f);
     dailySection = hourlySection = rankingSection = null;
-    LinearLayout summary = u.column();
-    summary.setPadding(u.d(16), u.d(14), u.d(16), u.d(14));
-    summary.setBackground(u.shape(u.hero, 22));
+    LinearLayout summary = u.card();
     LinearLayout metrics = u.row();
     metrics.setGravity(Gravity.TOP);
-    addMetric(metrics, "已保存通知", integers.format(analysis.total()), u.lime);
-    addMetric(metrics, "每日平均", averages.format(analysis.dailyAverage()), u.heroInk);
+    addMetric(metrics, "已保存通知", integers.format(analysis.total()), u.accent);
+    addMetric(metrics, "每日平均", averages.format(analysis.dailyAverage()), u.ink);
     summary.addView(metrics);
     LocalDate busiest = analysis.busiestDay();
     if (busiest != null) {
       u.gap(summary, 10);
-      summary.addView(u.text("通知最多的一天", 13, u.heroMuted, false));
-      summary.addView(u.text(busiest + " · " + count(analysis.dailyCount(busiest)), 16, u.heroInk, true));
+      summary.addView(u.text("通知最多的一天", 13, u.muted, false));
+      summary.addView(u.text(busiest + " · " + count(analysis.dailyCount(busiest)), 16, u.ink, true));
     }
     body.addView(summary);
     u.gap(body, 12);
@@ -540,8 +594,7 @@ public final class AnalysisActivity extends Activity {
   }
 
   private boolean compactControls() {
-    return getResources().getConfiguration().fontScale >= 1.5f
-        || getResources().getConfiguration().screenWidthDp < 360;
+    return u.compact();
   }
 
   private void showRecords(LocalDate from, LocalDate to, String packageName, String label) {
@@ -556,13 +609,11 @@ public final class AnalysisActivity extends Activity {
         .putExtra(FIRST_DATE, from.toString()).putExtra(LAST_DATE, to.toString())
         .putExtra(PACKAGE, packageName).putExtra(APP_NAME, label).putExtra(DASHBOARD_STATE, state));
     finish();
+    overridePendingTransition(0, 0);
   }
 
   private LinearLayout card() {
-    LinearLayout card = u.column();
-    card.setPadding(u.d(12), u.d(12), u.d(12), u.d(10));
-    card.setBackground(u.outline(u.surface, 20));
-    return card;
+    return u.card();
   }
 
   private void addHeading(LinearLayout parent, String title) {
@@ -573,7 +624,7 @@ public final class AnalysisActivity extends Activity {
 
   private void addMetric(LinearLayout row, String label, String value, int color) {
     LinearLayout metric = u.column();
-    metric.addView(u.text(label, 13, u.heroMuted, false));
+    metric.addView(u.text(label, 13, u.muted, false));
     metric.addView(u.text(value, 25, color, true));
     addColumn(row, metric);
   }
@@ -616,7 +667,7 @@ public final class AnalysisActivity extends Activity {
     RankRow(boolean preview) {
       super(AnalysisActivity.this);
       boolean stacked = compactControls();
-      setPadding(u.d(preview ? 0 : 16), 0, u.d(preview ? 0 : 16), u.d(6));
+      setPadding((preview ? 0 : u.pageInset()), 0, (preview ? 0 : u.pageInset()), u.d(6));
       LinearLayout tile = stacked ? u.column() : u.row();
       tile.setPadding(u.d(6), u.d(4), u.d(6), u.d(4));
       if (!preview) tile.setBackground(u.outline(u.surface, 16));
@@ -636,7 +687,7 @@ public final class AnalysisActivity extends Activity {
           : new LinearLayout.LayoutParams(0, -2, 1));
 
       LinearLayout actions = u.row();
-      trend = u.button("看趨勢", false);
+      trend = u.quietButton("看趨勢");
       records = u.button("查看紀錄", false);
       for (TextView action : new TextView[]{trend, records}) {
         action.setTextSize(13);
