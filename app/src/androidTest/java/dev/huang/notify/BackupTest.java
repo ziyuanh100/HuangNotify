@@ -97,7 +97,7 @@ public class BackupTest extends AndroidTestCase {
       for(String id:docs.files().keySet()) {
         try(BackupFiles.Session session=BackupFiles.read(c,Uri.parse(id),new BackupTask())) {
           assertTrue(session.encrypted);BackupFiles.unlock(session,"password123".toCharArray(),new BackupTask());
-          assertEquals(3,session.stage.format);found=true;
+          assertEquals(BackupArchive.VERSION,session.stage.format);found=true;
         }
       }
       assertTrue(found);

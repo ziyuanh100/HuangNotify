@@ -14,12 +14,12 @@ public class Version130Test extends AndroidTestCase {
   @Override protected void setUp()throws Exception{super.setUp();s=Store.get(getContext());Store.IO.submit(()->{s.getWritableDatabase().delete("records",null,null);s.getWritableDatabase().delete("settings",null,null);s.pruneImages();s.clearDiagnostics();}).get();dir=new File(getContext().getCacheDir(),"v130-"+UUID.randomUUID());assertTrue(dir.mkdir());}
   @Override protected void tearDown()throws Exception{Store.IO.submit(()->{s.getWritableDatabase().delete("records",null,null);s.getWritableDatabase().delete("settings",null,null);s.pruneImages();s.clearDiagnostics();}).get();BackupFiles.erase(dir);super.tearDown();}
   Record capture(String key,String text,NotificationImages.Attachment image){s.capture(key,"v130.fixture","Fixture","標題",text,1,image==null?NotificationImages.Result.empty("none"):new NotificationImages.Result(Collections.singletonList(image),"saved"));for(Record row:s.list("",null,false,false,10))if(row.key.equals(key))return row;throw new AssertionError("Record missing");}
-  public void testStreamingExportReadableBy120AndCachedChecksumRejectsMutation()throws Exception{
+  public void testStreamingEncryptedExportAndCachedChecksumRejectsMutation()throws Exception{
     NotificationImages.Attachment image=ImageStoreTest.picture(0xff146c59);Record r=capture("one","一",image);s.capture("one","v130.fixture","Fixture","標題","二",2,NotificationImages.Result.empty("none"));s.favorite(r.id,true);s.note(r.id,"保留備註");
     try(BackupFiles.Session file=AutoBackup.IO.submit(()->BackupFiles.export(getContext(),"password123".toCharArray(),new BackupTask())).get(30,TimeUnit.SECONDS)){
       assertFalse(file.plain.exists());assertNotNull(file.sha256);assertEquals(file.ready.length(),file.readyBytes);
-      File json=new File(dir,"old-readable.json");try(InputStream in=new FileInputStream(file.ready);OutputStream out=new FileOutputStream(json)){Legacy12BackupStreamCrypto.decrypt(in,out,"password123".toCharArray(),new java.util.concurrent.atomic.AtomicBoolean(),n->{});}
-      try(Legacy12BackupArchive.Stage stage=Legacy12BackupArchive.read(json,new File(dir,"old.db"),new BackupTask())){assertEquals(1,stage.records);assertEquals(2,stage.versions);assertEquals(1,stage.images);}
+      File payload=new File(dir,"decrypted.hnbackup");try(InputStream in=new FileInputStream(file.ready);OutputStream out=new FileOutputStream(payload)){Legacy12BackupStreamCrypto.decrypt(in,out,"password123".toCharArray(),new java.util.concurrent.atomic.AtomicBoolean(),n->{});}
+      try(BackupArchive.Stage stage=BackupArchive.read(payload,new File(dir,"stage.db"),new BackupTask())){assertEquals(BackupArchive.VERSION,stage.format);assertEquals(1,stage.records);assertEquals(2,stage.versions);assertEquals(1,stage.images);}
       AutoBackup.Documents d=new AutoBackup.Documents(getContext(),Uri.parse("content://dev.huang.notify.testdocs/tree/root"));String id=d.create("tampered-ready.hnbk");
       try{try(RandomAccessFile edit=new RandomAccessFile(file.ready,"rw")){edit.seek(45);int value=edit.read();edit.seek(45);edit.write(value^1);}try{BackupFiles.save(getContext(),file,Uri.parse(id),new BackupTask());fail("Mutated cached source was accepted");}catch(IOException expected){}}finally{d.delete(id);}
     }
@@ -36,14 +36,12 @@ public class Version130Test extends AndroidTestCase {
     sameTime.put("time",100);
     s.getWritableDatabase().update("versions",sameTime,"record_id=?",new String[]{record.id});
     JSONArray before=s.versions(record.id);
-    File json=new File(dir,"paged.json");
-    try(OutputStream out=new FileOutputStream(json)){BackupArchive.write(s.getReadableDatabase(),out,new BackupTask());}
-    try(Legacy12BackupArchive.Stage stage=Legacy12BackupArchive.read(json,new File(dir,"legacy.db"),new BackupTask())){
+    File payload=new File(dir,"paged.hnbackup");
+    try(OutputStream out=new FileOutputStream(payload)){BackupArchive.write(s.getReadableDatabase(),out,new BackupTask());}
+    try(BackupArchive.Stage stage=BackupArchive.read(payload,new File(dir,"restore.db"),new BackupTask())){
       assertEquals(71,stage.records);
       assertEquals(141,stage.versions);
       assertEquals(1,stage.images);
-    }
-    try(BackupArchive.Stage stage=BackupArchive.read(json,new File(dir,"restore.db"),new BackupTask())){
       s.getWritableDatabase().delete("records",null,null);
       s.pruneImages();
       assertEquals(71,s.restoreStage(stage,true,new BackupTask())[0]);

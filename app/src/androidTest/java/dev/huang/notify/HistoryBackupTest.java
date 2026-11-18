@@ -102,15 +102,15 @@ public class HistoryBackupTest extends AndroidTestCase {
     assertTrue(dir.mkdir());
     try {
       seedCompactVersions(store, recordCount, limit);
-      File json = new File(dir, "limit.json");
-      try (FileOutputStream output = new FileOutputStream(json)) {
+      File archive = new File(dir, "limit.hnbackup");
+      try (FileOutputStream output = new FileOutputStream(archive)) {
         BackupArchive.write(store.getReadableDatabase(), output, new BackupTask());
       }
-      assertTrue(json.length() < BackupStreamCrypto.MAX_BYTES);
+      assertTrue(archive.length() < BackupStreamCrypto.MAX_BYTES);
 
       clearRecords(store);
       File staging = new File(dir, "stage.db");
-      try (BackupArchive.Stage stage = BackupArchive.read(json, staging, new BackupTask())) {
+      try (BackupArchive.Stage stage = BackupArchive.read(archive, staging, new BackupTask())) {
         assertEquals(limit, stage.versions);
         assertEquals(recordCount, stage.records);
         assertEquals(recordCount, store.restoreStage(stage, false, new BackupTask())[0]);
@@ -118,9 +118,9 @@ public class HistoryBackupTest extends AndroidTestCase {
       assertTrue(SQLiteDatabase.deleteDatabase(staging));
       assertEquals(limit, store.storageUsage().historyCount);
 
-      appendOneVersion(json, limit);
-      assertTrue(json.length() < BackupStreamCrypto.MAX_BYTES);
-      try (BackupArchive.Stage ignored = BackupArchive.read(json, staging, new BackupTask())) {
+      appendOneVersion(archive, limit);
+      assertTrue(archive.length() < BackupStreamCrypto.MAX_BYTES);
+      try (BackupArchive.Stage ignored = BackupArchive.read(archive, staging, new BackupTask())) {
         fail("Accepted a backup with 2,000,001 history entries");
       } catch (BackupProblem expected) {
         assertEquals(BackupArchive.TOO_MANY_VERSIONS, expected.getMessage());
@@ -163,11 +163,11 @@ public class HistoryBackupTest extends AndroidTestCase {
     }
   }
 
-  private static void appendOneVersion(File json, int version) throws Exception {
-    byte[] suffix = "]}],\"images\":[],\"settings\":{}}".getBytes(StandardCharsets.UTF_8);
+  private static void appendOneVersion(File archive, int version) throws Exception {
+    byte[] suffix = "]}],\"settings\":{}}".getBytes(StandardCharsets.UTF_8);
     String extra = "," + new JSONObject().put("id", new UUID(0, version).toString()).put("time", TIME)
         .put("title", "t").put("body", "1").put("image_status", "none").put("images", new JSONArray());
-    try (RandomAccessFile file = new RandomAccessFile(json, "rw")) {
+    try (RandomAccessFile file = new RandomAccessFile(archive, "rw")) {
       long offset = file.length() - suffix.length;
       file.seek(offset);
       byte[] actual = new byte[suffix.length];

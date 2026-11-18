@@ -4,9 +4,8 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 
-/** Emits the backup schema in UTF-8, writing each string and encoded image in bulk. */
+/** Emits backup metadata in UTF-8, writing strings in bulk. */
 final class BackupJsonWriter implements AutoCloseable {
   private static final String[] ESCAPES = new String[128];
   static {
@@ -22,9 +21,7 @@ final class BackupJsonWriter implements AutoCloseable {
     ESCAPES['\r'] = "\\r";
     ESCAPES['\t'] = "\\t";
   }
-  private static final Base64.Encoder BASE64 = Base64.getEncoder();
   private final BufferedOutputStream out;
-  private byte[] encodedImage;
   private boolean comma;
 
   BackupJsonWriter(OutputStream destination) {
@@ -73,16 +70,6 @@ final class BackupJsonWriter implements AutoCloseable {
     separate();
     utf8(Long.toString(value));
     return this;
-  }
-
-  void image(byte[] bytes) throws IOException {
-    if (encodedImage == null) {
-      encodedImage = new byte[((NotificationImages.MAX_IMAGE_BYTES + 2) / 3) * 4];
-    }
-    separate();
-    out.write('"');
-    out.write(encodedImage, 0, BASE64.encode(bytes, encodedImage));
-    out.write('"');
   }
 
   private void quoted(String value) throws IOException {

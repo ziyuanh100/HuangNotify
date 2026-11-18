@@ -5,19 +5,22 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.*;
 import android.text.InputType;
+import android.view.View;
 import android.widget.*;
+import java.text.NumberFormat;
 import java.util.Arrays;
+import java.util.Locale;
 
 /** Re-attachable view of the application-owned operation; destroying a screen does not cancel work. */
 final class BackupScreen implements BackupOperation.Observer {
   final Activity activity;final Ui u;final Runnable changed;
   private boolean destroyed,resumed;private BackupOperation shown;private BackupOperation.State shownState;
-  AppDialog progress;private AppDialog prompt;private TextView step,phase;private ProgressBar bar;
+  AppDialog progress;private AppDialog prompt,exportOptions;private TextView step,phase;private ProgressBar bar;
   private final Handler handler=new Handler(Looper.getMainLooper());
   BackupScreen(Activity activity,Ui u,Runnable changed){this.activity=activity;this.u=u;this.changed=changed;}
   void resume(){resumed=true;BackupOperation.observe(this);if(BackupOperation.recover(activity))toast("上次備份作業已中斷，請重新操作；手機紀錄仍保留");update();}
   void pause(){resumed=false;BackupOperation.detach(this);hideProgress();}
-  void destroy(){destroyed=true;pause();if(prompt!=null)prompt.dismiss();handler.removeCallbacksAndMessages(null);}
+  void destroy(){destroyed=true;pause();if(prompt!=null)prompt.dismiss();if(exportOptions!=null)exportOptions.dismiss();handler.removeCallbacksAndMessages(null);}
   private void toast(String text){if(!destroyed)Toast.makeText(activity,text,Toast.LENGTH_LONG).show();}
   private EditText password(String hint){EditText e=u.field(hint);e.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);return e;}
   private LinearLayout body(){LinearLayout b=u.column();b.setBackgroundColor(u.surface);return b;}
@@ -46,7 +49,7 @@ final class BackupScreen implements BackupOperation.Observer {
     if(op==shown&&state==shownState){if((progress==null||!progress.isShowing())&&op.working)showProgress(op);return;}
     shown=op;shownState=state;hideProgress();if(prompt!=null){prompt.dismiss();prompt=null;}
     switch(state){
-      case EXPORT_PICKER:if(!op.pickerLaunched){op.pickerLaunched=true;try{activity.startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE,"HuangNotify_"+System.currentTimeMillis()+(op.session.encrypted?".hnbk":".hnjson")),101);}catch(Exception e){op.fail(e);}}break;
+      case EXPORT_PICKER:if(!op.pickerLaunched){op.pickerLaunched=true;try{activity.startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE,"HuangNotify_"+System.currentTimeMillis()+(op.session.encrypted?".hnbk":BackupArchive.EXTENSION)),101);}catch(Exception e){op.fail(e);}}break;
       case IMPORT_PICKER:break;
       case LOCKED:unlockDialog(op);break;
       case PREVIEW:preview(op);break;
@@ -78,15 +81,123 @@ final class BackupScreen implements BackupOperation.Observer {
     if(saveFailed)prompt.setOnCancelListener(d->BackupOperation.clear(op));
     prompt.show();
   }
-  void exportDialog(){
-    if(BackupOperation.busy()){toast("已有備份作業進行中");update();return;}
-    LinearLayout b=body();b.addView(u.text("包含所有通知、圖片、歷程、收藏與備註。單份上限 "
-        + BackupStreamCrypto.MAX_MIB + " MiB，最多 " + BackupArchive.VERSION_LIMIT
-        + "更新歷程。超過 100 MiB 的檔案需使用 1.6.0 以上版本還原。",14,u.muted,false));
-    EditText password=password("備份密碼（至少 8 個字元）"),confirm=password("再次輸入密碼");u.gap(b,12);b.addView(password);u.gap(b,8);b.addView(confirm);
-    AppDialog dialog=new AppDialog.Builder(activity).setTitle("建立備份").setView(b).setNegativeButton("取消",null)
-      .setNeutralButton("不加密",(d,w)->new AppDialog.Builder(activity).setTitle("匯出未加密備份？").setMessage("取得檔案的人可閱讀文字及圖片，請妥善保管。").setNegativeButton("取消",null).setPositiveButton("匯出",(dd,ww)->prepareExport(null)).show()).setPositiveButton("加密匯出",null).create();
-    dialog.setOnShowListener(d->dialog.getButton(AppDialog.BUTTON_POSITIVE).setOnClickListener(v->{if(password.length()<8){password.setError("至少 8 個字元");return;}if(!password.getText().toString().equals(confirm.getText().toString())){confirm.setError("兩次密碼不相同");return;}char[] secret=password.getText().toString().toCharArray();password.setText("");confirm.setText("");dialog.dismiss();prepareExport(secret);}));dialog.show();
+  void exportDialog() {
+    if (BackupOperation.busy()) {
+      toast("已有備份作業進行中");
+      update();
+      return;
+    }
+    if (exportOptions != null && exportOptions.isShowing()) return;
+    LinearLayout b = body();
+    LinearLayout summary = u.card();
+    TextView total = u.text("正在估算備份容量…", 16, u.ink, true);
+    total.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+    summary.addView(total);
+    b.addView(summary);
+    u.gap(b, 10);
+    b.addView(u.text("完整備份包含所有通知、備註、收藏、圖片與歷程。需用 HuangNotify 1.9.0 以上版本還原。",
+        13, u.muted, false));
+    EditText password = password("備份密碼（至少 8 個字元）"), confirm = password("再次輸入密碼");
+    u.gap(b, 12);
+    b.addView(password);
+    u.gap(b, 8);
+    b.addView(confirm);
+    AppDialog dialog = new AppDialog.Builder(activity).setTitle("建立備份").setView(b)
+        .setNegativeButton("取消", null)
+        .setNeutralButton("不加密", (d, w) -> new AppDialog.Builder(activity)
+            .setTitle("匯出未加密備份？").setMessage("取得檔案的人可閱讀文字及圖片，請妥善保管。")
+            .setNegativeButton("取消", null).setPositiveButton("匯出", (dd, ww) -> prepareExport(null)).show())
+        .setPositiveButton("加密匯出", null).create();
+    CancellationSignal cancellation = new CancellationSignal();
+    exportOptions = dialog;
+    dialog.setOnDismissListener(d -> {
+      cancellation.cancel();
+      if (exportOptions == dialog) exportOptions = null;
+    });
+    dialog.show();
+    TextView encrypted = dialog.getButton(AppDialog.BUTTON_POSITIVE);
+    TextView plain = dialog.getButton(AppDialog.BUTTON_NEUTRAL);
+    if (encrypted == null || plain == null) return;
+    encrypted.setEnabled(false);
+    plain.setEnabled(false);
+    encrypted.setOnClickListener(v -> {
+      if (password.length() < 8) { password.setError("至少 8 個字元"); return; }
+      if (!password.getText().toString().equals(confirm.getText().toString())) {
+        confirm.setError("兩次密碼不相同");
+        return;
+      }
+      char[] secret = password.getText().toString().toCharArray();
+      password.setText("");
+      confirm.setText("");
+      dialog.dismiss();
+      prepareExport(secret);
+    });
+    Store.SEARCH.execute(() -> {
+      BackupEstimate result;
+      try {
+        cancellation.throwIfCanceled();
+        result = BackupEstimate.read(Store.get(activity).getReadableDatabase(), cancellation);
+      } catch (OperationCanceledException cancelled) {
+        return;
+      } catch (RuntimeException unavailable) {
+        result = null;
+      }
+      BackupEstimate estimate = result;
+      handler.post(() -> {
+        if (destroyed || !dialog.isShowing() || cancellation.isCanceled()) return;
+        renderEstimate(summary, total, estimate);
+        boolean allowed = estimate == null || !estimate.exceedsCountLimit();
+        encrypted.setEnabled(allowed);
+        plain.setEnabled(allowed);
+      });
+    });
+  }
+
+  private void renderEstimate(LinearLayout summary, TextView total, BackupEstimate estimate) {
+    String cap = BackupStreamCrypto.MAX_MIB + " MiB";
+    if (estimate == null) {
+      total.setText("無法估算容量");
+      summary.addView(u.text("仍可匯出，單份上限 " + cap + "、" + BackupArchive.VERSION_LIMIT + "更新歷程。",
+          13, u.muted, false));
+      return;
+    }
+    NumberFormat number = NumberFormat.getIntegerInstance(Locale.TAIWAN);
+    total.setText("預估容量 " + estimateSize(estimate.totalBytes) + " / " + cap);
+    u.gap(summary, 6);
+    estimateRow(summary, "通知與備註", estimate.recordBytes);
+    estimateRow(summary, "更新歷程", estimate.historyBytes);
+    estimateRow(summary, "圖片", estimate.imageBytes);
+    u.gap(summary, 6);
+    summary.addView(u.text("歷程 " + number.format(estimate.versions) + " / "
+        + BackupArchive.VERSION_LIMIT + "（含首次記錄）", 13, u.muted, false));
+    if (estimate.versions > BackupArchive.MAX_VERSIONS) {
+      summary.addView(u.text(BackupArchive.TOO_MANY_VERSIONS, 13, u.danger, true));
+    }
+    if (estimate.records > BackupArchive.MAX_RECORDS) {
+      summary.addView(u.text("通知超過 " + number.format(BackupArchive.MAX_RECORDS) + " 則",
+          13, u.danger, true));
+    }
+    if (estimate.images > BackupArchive.MAX_IMAGES) {
+      summary.addView(u.text("不同圖片超過 " + number.format(BackupArchive.MAX_IMAGES) + " 張",
+          13, u.danger, true));
+    }
+    if (estimate.totalBytes > BackupStreamCrypto.MAX_BYTES) {
+      summary.addView(u.text("預估超過 " + cap + "，以匯出時檢查為準。", 13, u.danger, true));
+    }
+  }
+
+  private void estimateRow(LinearLayout summary, String label, long bytes) {
+    LinearLayout row = u.row();
+    row.addView(u.text(label, 14, u.ink, false), new LinearLayout.LayoutParams(0, -2, 1));
+    row.addView(u.text(estimateSize(bytes), 14, u.ink, false));
+    summary.addView(row);
+  }
+
+  private static String estimateSize(long bytes) {
+    if (bytes == 0) return "0 KiB";
+    if (bytes < 1024) return "小於 1 KiB";
+    if (bytes < 1024 * 1024) return String.format(Locale.TAIWAN, "%.1f KiB", bytes / 1024.0);
+    return String.format(Locale.TAIWAN, "%.1f MiB", bytes / (1024.0 * 1024));
   }
   void prepareExport(char[] password){BackupOperation op=BackupOperation.begin(activity,BackupOperation.State.EXPORTING);if(op==null){if(password!=null)Arrays.fill(password,'\0');toast("已有備份作業進行中");return;}op.export(password);update();}
   void chooseImport(){BackupOperation op=BackupOperation.begin(activity,BackupOperation.State.IMPORT_PICKER);if(op==null){toast("已有備份作業進行中");update();return;}op.pickerLaunched=true;try{activity.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),102);}catch(Exception e){op.fail(e);}}

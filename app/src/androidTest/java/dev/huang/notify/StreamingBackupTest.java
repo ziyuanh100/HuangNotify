@@ -79,8 +79,98 @@ public class StreamingBackupTest extends AndroidTestCase {
       assertEquals(picture.data.length,store.clearImages(true));assertNull(store.image(picture.hash));assertEquals(2,store.counts()[0]);assertEquals(1,store.counts()[2]);
       store.restoreStage(s,false,new BackupTask());assertNotNull(store.image(picture.hash));for(Record r:store.list("",null,false,false,10))assertEquals(1,r.imageCount);
       store.clearImages(true);File output=new File(dir,"clear.json");try(OutputStream out=new FileOutputStream(output)){BackupArchive.write(store.getReadableDatabase(),out,new BackupTask());}
-      try(BackupArchive.Stage cleared=BackupArchive.read(output,new File(dir,"clear.db"),new BackupTask())){assertEquals(3,cleared.format);assertEquals(0,cleared.images);}
+      try(BackupArchive.Stage cleared=BackupArchive.read(output,new File(dir,"clear.db"),new BackupTask())){assertEquals(BackupArchive.VERSION,cleared.format);assertEquals(0,cleared.images);}
     }
+  }
+
+  public void testLegacyV3AndEncryptedHnbk2KeepHistoryOnlyPicture() throws Exception {
+    NotificationImages.Attachment picture = ImageStoreTest.picture(0xff146c59);
+    capture("legacy-v3", picture);
+    store.capture("legacy-v3", "stream.fixture", "Fixture", "更新", "文字", 2);
+    String record = store.list("", null, false, false, 1).get(0).id;
+    store.favorite(record, true);
+    store.note(record, "保留備註");
+    File legacy = new File(dir, "legacy-v3.hnjson");
+    try (OutputStream out = new FileOutputStream(legacy)) {
+      Legacy12BackupArchive.write(store.getReadableDatabase(), out, new BackupTask());
+    }
+    try (BackupArchive.Stage staged = BackupArchive.read(legacy, new File(dir, "plain.db"), new BackupTask())) {
+      assertEquals(3, staged.format);
+      assertEquals(2, staged.versions);
+      assertEquals(1, staged.images);
+    }
+    AutoBackup.Documents docs = new AutoBackup.Documents(
+        getContext(), Uri.parse("content://dev.huang.notify.testdocs/tree/root"));
+    String id = docs.create("legacy-v3-encrypted.hnbk");
+    char[] password = "password123".toCharArray();
+    try {
+      try (InputStream in = new FileInputStream(legacy); OutputStream out = docs.write(id)) {
+        Legacy12BackupStreamCrypto.encrypt(in, out, password, new java.util.concurrent.atomic.AtomicBoolean(), n -> {});
+      }
+      store.getWritableDatabase().delete("records", null, null);
+      store.pruneImages();
+      try (BackupFiles.Session session = BackupFiles.read(getContext(), Uri.parse(id), new BackupTask())) {
+        assertTrue(session.encrypted);
+        BackupFiles.unlock(session, password, new BackupTask());
+        assertEquals(3, session.stage.format);
+        assertEquals(1, store.restoreStage(session.stage, true, new BackupTask())[0]);
+      }
+      Record restored = store.list("", null, true, false, 1).get(0);
+      assertEquals(record, restored.id);
+      assertEquals("保留備註", restored.note);
+      assertEquals(0, restored.imageCount);
+      assertTrue(Arrays.equals(picture.data, store.image(picture.hash)));
+    } finally {
+      Arrays.fill(password, '\0');
+      docs.delete(id);
+    }
+  }
+
+  public void testCompactArchiveStoresPngVerbatimAndRejectsMalformedAttachments() throws Exception {
+    NotificationImages.Attachment picture = ImageStoreTest.picture(0xff146c59);
+    capture("first-reference", picture);
+    store.capture("first-reference", "stream.fixture", "Fixture", "更新", "僅存在歷程的圖片", 2);
+    capture("second-reference", picture);
+    File archive = new File(dir, "raw-png.hnbackup");
+    BackupEstimate estimate = BackupEstimate.read(store.getReadableDatabase(), new android.os.CancellationSignal());
+    try (OutputStream out = new FileOutputStream(archive)) {
+      BackupArchive.write(store.getReadableDatabase(), out, new BackupTask());
+    }
+    assertEquals(2L, estimate.records);
+    assertEquals(3L, estimate.versions);
+    assertEquals(1L, estimate.images);
+    assertEquals(picture.data.length + BackupArchive.IMAGE_HEADER_BYTES, estimate.imageBytes);
+    assertEquals(archive.length(), estimate.totalBytes);
+    byte[] original = java.nio.file.Files.readAllBytes(archive.toPath());
+    try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(original))) {
+      byte[] magic = new byte[5];
+      in.readFully(magic);
+      assertTrue(Arrays.equals(new byte[]{'H', 'N', 'A', 'R', 1}, magic));
+      assertEquals(picture.data.length, in.readInt());
+      byte[] hash = new byte[64], png = new byte[picture.data.length];
+      in.readFully(hash);
+      assertEquals(picture.hash, new String(hash, StandardCharsets.US_ASCII));
+      assertEquals(picture.width, in.readUnsignedShort());
+      assertEquals(picture.height, in.readUnsignedShort());
+      in.readFully(png);
+      assertTrue(Arrays.equals(picture.data, png));
+      assertEquals(0, in.readInt());
+      assertEquals('{', in.read());
+    }
+    for (int mutation = 0; mutation < 4; mutation++) {
+      byte[] invalid = original.clone();
+      if (mutation == 0) invalid[4] = 2;
+      if (mutation == 1) java.nio.ByteBuffer.wrap(invalid).putInt(5, NotificationImages.MAX_IMAGE_BYTES + 1);
+      if (mutation == 2) invalid[5 + BackupArchive.IMAGE_HEADER_BYTES + 10] ^= 1;
+      if (mutation == 3) invalid = Arrays.copyOf(invalid, invalid.length + 1);
+      java.nio.file.Files.write(archive.toPath(), invalid);
+      try (BackupArchive.Stage ignored = BackupArchive.read(archive, new File(dir, "invalid" + mutation + ".db"),
+          new BackupTask())) {
+        fail("Accepted damaged compact archive " + mutation);
+      } catch (IOException | IllegalArgumentException expected) {}
+    }
+    assertEquals(2L, store.counts()[0]);
+    assertTrue(Arrays.equals(picture.data, store.image(picture.hash)));
   }
 
   public void testStorageUsageCountsUtf8NotesAndSharedImages() throws Exception {
