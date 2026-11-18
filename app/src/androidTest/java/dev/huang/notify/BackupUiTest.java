@@ -34,9 +34,21 @@ public class BackupUiTest extends ActivityInstrumentationTestCase2<MainActivity>
     try{
       getInstrumentation().runOnMainSync(()->main.backupScreen.chooseImport());getInstrumentation().waitForIdleSync();
       assertTrue("Document picker was not intercepted",monitor.getHits()>0);
-      getInstrumentation().runOnMainSync(()->main.backupScreen.exportDialog());getInstrumentation().waitForIdleSync();
-    assertNotNull("Cancelled picker left backup busy",dialog());assertTrue(dialog().isShowing());assertNotNull(find(dialog().getWindow().getDecorView(),"建立備份"));
-    assertNotNull(findContaining(dialog().getWindow().getDecorView(), "2,000,000 筆更新歷程"));
+      getInstrumentation().runOnMainSync(()->main.backupScreen.exportDialog());
+      Store.SEARCH.submit(() -> {}).get(20, TimeUnit.SECONDS);
+      getInstrumentation().waitForIdleSync();
+      AppDialog options = dialog();
+      assertNotNull("Cancelled picker left backup busy", options);
+      assertTrue(options.isShowing());
+      View screen = options.getWindow().getDecorView();
+      assertNotNull(find(screen, "建立備份"));
+      assertNotNull(findContaining(screen, "預估容量"));
+      assertNotNull(findContaining(screen, "/ 250 MiB"));
+      assertNotNull(findContaining(screen, "/ 2,000,000 筆"));
+      for (String label : new String[]{"通知與備註", "更新歷程", "圖片"}) assertNotNull(find(screen, label));
+      assertTrue(options.getButton(AppDialog.BUTTON_POSITIVE).isEnabled());
+      assertTrue(options.getButton(AppDialog.BUTTON_NEUTRAL).isEnabled());
+      capture("backup-capacity-preview.png");
     }
     finally{getInstrumentation().removeMonitor(monitor);}
   }

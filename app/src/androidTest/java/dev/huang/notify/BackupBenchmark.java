@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Random;
@@ -21,6 +22,7 @@ final class BackupBenchmark {
   private static final Uri TREE = Uri.parse("content://dev.huang.notify.testdocs/tree/root");
   private static final char[] PASSWORD = "benchmark-password-123".toCharArray();
   private static final int TRIALS = 5, NOTE_LIMIT = 100000;
+  private static final int FIRST_PNG_CONTAINER_CODE = 27;
 
   static void run(Context context, String kind, int expectedMiB, java.util.function.Consumer<String> progress)
       throws Exception {
@@ -34,7 +36,12 @@ final class BackupBenchmark {
         .put("abi", android.os.Build.SUPPORTED_ABIS[0]).put("limit_bytes", limit)
         .put("kind", kind).put("warmups_per_mode", 1).put("measured_runs_per_mode", TRIALS)
         .put("destination", "local debug DocumentsProvider").put("cases", new JSONArray());
+    File comparison = context.getFileStreamPath("backup-size-source.hnjson");
     try {
+      if (kind.equals("images") && comparison.isFile()) {
+        progress.accept("Comparing backup size with the identical previous-version dataset");
+        report.put("same_data", compareSameData(context, comparison));
+      }
       progress.accept("Preparing " + kind + " at " + limit + " bytes");
       long[] counts = Store.IO.submit(() -> seed(context, kind, limit)).get();
       report.put("records", counts[0]).put("images", counts[1]);
@@ -52,12 +59,46 @@ final class BackupBenchmark {
         mode.put("export_median_ms", median(runs, "export_ms"))
             .put("restore_median_ms", median(runs, "restore_ms"));
       }
+      if (kind.equals("images") && BuildConfig.VERSION_CODE < FIRST_PNG_CONTAINER_CODE) {
+        try (BackupFiles.Session fixture = BackupFiles.export(context, null, new BackupTask())) {
+          if (fixture.readyBytes != limit) throw new AssertionError("The baseline fixture is not at capacity");
+          Files.copy(fixture.ready.toPath(), comparison.toPath());
+        }
+      }
       report.put("completed", true);
     } finally {
       try (OutputStream out = new FileOutputStream(new File(context.getFilesDir(), "backup-performance.json"))) {
         out.write(report.toString(2).getBytes(StandardCharsets.UTF_8));
       }
     }
+  }
+
+  private static JSONObject compareSameData(Context context, File source) throws Exception {
+    Store store = Store.get(context);
+    BackupTask task = new BackupTask();
+    long sourceBytes = source.length();
+    JSONObject sizes;
+    try (BackupFiles.Session session = new BackupFiles.Session(context)) {
+      try (BackupArchive.Stage stage = BackupArchive.read(source, session.database, task)) {
+        int restored = Store.IO.submit(() -> {
+          reset(store);
+          return store.restoreStage(stage, true, task)[0];
+        }).get();
+        if (restored != stage.records) throw new AssertionError("The baseline fixture did not restore");
+        sizes = new JSONObject().put("previous_plain_bytes", sourceBytes).put("records", stage.records)
+            .put("images", stage.images).put("versions", stage.versions);
+      }
+    } finally {
+      source.delete();
+    }
+    try (BackupFiles.Session plain = BackupFiles.export(context, null, new BackupTask())) {
+      if (plain.readyBytes >= sourceBytes) throw new AssertionError("The PNG bundle did not reduce the file size");
+      sizes.put("current_plain_bytes", plain.readyBytes);
+    }
+    try (BackupFiles.Session encrypted = BackupFiles.export(context, PASSWORD, new BackupTask())) {
+      sizes.put("current_encrypted_bytes", encrypted.readyBytes);
+    }
+    return sizes;
   }
 
   private static JSONObject measure(Context context, boolean encrypted, long limit, long[] counts) throws Exception {
@@ -141,7 +182,10 @@ final class BackupBenchmark {
             if (image == null) throw new AssertionError("Image fixture could not be encoded");
             store.capture("image-" + index, "benchmark.fixture", "Fixture", "Image", "Synthetic", index,
                 new NotificationImages.Result(Collections.singletonList(image), "saved"));
-            estimate += ((image.data.length + 2L) / 3) * 4 + 1200;
+            // The harness is compiled against both the legacy JSON writer and the PNG writer.
+            long imageBytes = BuildConfig.VERSION_CODE < FIRST_PNG_CONTAINER_CODE
+                ? ((image.data.length + 2L) / 3) * 4 : image.data.length;
+            estimate += imageBytes + 1200;
             index++;
           }
         } finally {
@@ -156,7 +200,7 @@ final class BackupBenchmark {
     } finally {
       db.endTransaction();
     }
-    // Fill the gap using real notes so the JSON is exactly at the version's byte limit.
+    // Fill the gap using real notes so the payload is exactly at the version's byte limit.
     long bytes = bytes(db);
     if (bytes >= limit) throw new AssertionError("Fixture exceeded the target before adjustment");
     int fillers = (int) ((limit - bytes + NOTE_LIMIT - 1) / NOTE_LIMIT);

@@ -17,6 +17,7 @@ final class NotificationImages {
   static final int MAX_IMAGES=4, MAX_EDGE=1440, MAX_IMAGE_BYTES=256*1024, MAX_SOURCE_BYTES=4*1024*1024;
   static final Set<String> STATUSES=new HashSet<>(Arrays.asList("none","saved","partial","unavailable","disabled","cleared"));
   private static final ThreadPoolExecutor READERS=new ThreadPoolExecutor(0,1,10,TimeUnit.SECONDS,new ArrayBlockingQueue<>(1),r->{Thread t=new Thread(r,"notification-image-reader"); t.setDaemon(true); return t;});
+  private static final char[] HEX = "0123456789abcdef".toCharArray();
   static final class Attachment {
     final String hash; final byte[] data; final int width,height;
     Attachment(byte[] data,int width,int height) { this.data=data; this.width=width; this.height=height; this.hash=sha(data); }
@@ -27,7 +28,16 @@ final class NotificationImages {
     static Result empty(String status) { return new Result(Collections.emptyList(),status); }
   }
   static String sha(byte[] data) {
-    try { byte[] digest=MessageDigest.getInstance("SHA-256").digest(data); StringBuilder s=new StringBuilder(); for(byte b:digest)s.append(String.format(Locale.ROOT,"%02x",b&255)); return s.toString(); }
+    try {
+      byte[] digest = MessageDigest.getInstance("SHA-256").digest(data);
+      char[] hex = new char[digest.length * 2];
+      for (int i = 0; i < digest.length; i++) {
+        int value = digest[i] & 0xff;
+        hex[i * 2] = HEX[value >>> 4];
+        hex[i * 2 + 1] = HEX[value & 0xf];
+      }
+      return new String(hex);
+    }
     catch(java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
   }
   static String fingerprint(String title,String body,List<String> hashes,String status) {
@@ -134,13 +144,13 @@ final class NotificationImages {
     try { return task.get(2,TimeUnit.SECONDS); }
     finally { cancellation.cancel(); task.cancel(true); READERS.purge(); android.content.res.AssetFileDescriptor fd=open.get(); if(fd!=null)try { fd.close(); } catch(IOException ignored) {} }
   }
-  static Attachment validate(byte[] bytes,String hash,int width,int height) throws IOException {
+  static void validate(byte[] bytes,String hash,int width,int height) throws IOException {
     if(bytes.length==0 || bytes.length>MAX_IMAGE_BYTES || !sha(bytes).equals(hash) || width<1 || height<1 || width>MAX_EDGE || height>MAX_EDGE)throw new IOException("備份圖片校驗失敗");
     byte[] magic={(byte)137,80,78,71,13,10,26,10};
     if(bytes.length<24 || !Arrays.equals(magic,Arrays.copyOf(bytes,8)))throw new IOException("備份圖片格式錯誤");
     BitmapFactory.Options o=new BitmapFactory.Options(); o.inJustDecodeBounds=true; BitmapFactory.decodeByteArray(bytes,0,bytes.length,o);
     if(o.outWidth!=width || o.outHeight!=height)throw new IOException("備份圖片尺寸不符");
     Bitmap bitmap=BitmapFactory.decodeByteArray(bytes,0,bytes.length);
-    if(bitmap==null)throw new IOException("備份圖片損壞"); bitmap.recycle(); return new Attachment(bytes,width,height);
+    if(bitmap==null)throw new IOException("備份圖片損壞"); bitmap.recycle();
   }
 }

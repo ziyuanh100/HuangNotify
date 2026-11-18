@@ -8,10 +8,21 @@ import android.util.JsonToken;
 import java.io.*;
 import java.nio.charset.*;
 import java.util.*;
+import java.util.regex.Pattern;
 import org.json.*;
 
-/** Streaming JSON v3. Import is staged on disk and fully validated before touching live records. */
+/** Streams the PNG attachments and JSON records of a backup into or out of a private snapshot. */
 final class BackupArchive {
+  static final int VERSION = 4;
+  static final String EXTENSION = ".hnbackup";
+  private static final byte[] MAGIC = {'H', 'N', 'A', 'R'};
+  private static final int CONTAINER_VERSION = 1;
+  private static final Pattern IMAGE_HASH = Pattern.compile("[0-9a-f]{64}");
+  static final int IMAGE_HEADER_BYTES = 4 + 64 + 2 + 2;
+  static final int ENVELOPE_BYTES = MAGIC.length + 1 + 4;
+  static final String REFERENCED_IMAGE = "(EXISTS(SELECT 1 FROM record_images r WHERE r.image_hash=i.hash)"
+      + " OR EXISTS(SELECT 1 FROM version_images v WHERE v.image_hash=i.hash))";
+  static final String BACKUP_SETTING = "name='retention' OR name='save_images' OR name LIKE 'exclude:%'";
   static final String[] TEXT={"id","nkey","pkg","app","title","body","note"};
   static final String[] TIMES={"posted","first_seen","updated","removed","reason","favorite"};
   static final int MAX_RECORDS=100000,MAX_IMAGES=100000;
@@ -22,7 +33,7 @@ final class BackupArchive {
     List<String> result=new ArrayList<>();
     try(Cursor c=db.rawQuery("SELECT image_hash FROM "+table+" WHERE "+column+"=? ORDER BY position",new String[]{id})){while(c.moveToNext())result.add(c.getString(0));}return result;
   }
-  private static final String[] VERSION_TEXT = {"id", "title", "body"};
+  static final String[] VERSION_TEXT = {"id", "title", "body"};
   private static final String VERSION_TABLE = "versions INDEXED BY versions_record";
   private static final String VERSION_ORDER = " ORDER BY record_id DESC,time DESC,rowid DESC";
   private static final String VERSION_PAGE = " WHERE (record_id,time,rowid)<(?,?,?)";
@@ -43,15 +54,18 @@ final class BackupArchive {
     try (Cursor overLimit = db.rawQuery("SELECT 1 FROM versions LIMIT 1 OFFSET " + MAX_VERSIONS, null)) {
       if (overLimit.moveToFirst()) throw invalid(TOO_MANY_VERSIONS);
     }
-    try (BackupJsonWriter writer = new BackupJsonWriter(new LimitedOutput(destination, task))) {
-      writer.beginObject().name("format").value("HuangNotify").name("version").value(3)
+    DataOutputStream archive = new DataOutputStream(new LimitedOutput(destination, task));
+    archive.write(MAGIC);
+    archive.writeByte(CONTAINER_VERSION);
+    writeImages(db, archive, task);
+    archive.writeInt(0);
+    try (BackupJsonWriter writer = new BackupJsonWriter(archive)) {
+      writer.beginObject().name("format").value("HuangNotify").name("version").value(VERSION)
           .name("created").value(System.currentTimeMillis()).name("records").beginArray();
       writeRecords(db, writer, task);
-      writer.endArray().name("images").beginArray();
-      writeImages(db, writer, task);
       writer.endArray().name("settings").beginObject();
       try (Cursor settings = db.rawQuery(
-          "SELECT name,value FROM settings WHERE name='retention' OR name='save_images' OR name LIKE 'exclude:%'", null)) {
+          "SELECT name,value FROM settings WHERE " + BACKUP_SETTING, null)) {
         while (settings.moveToNext()) {
           task.check();
           writer.name(settings.getString(0)).value(settings.getString(1));
@@ -142,7 +156,7 @@ final class BackupArchive {
     }
   }
 
-  private static void writeImages(SQLiteDatabase db, BackupJsonWriter writer, BackupTask task) throws Exception {
+  private static void writeImages(SQLiteDatabase db, DataOutputStream out, BackupTask task) throws IOException {
     int images = 0, pageSize;
     String[] after = null;
     do {
@@ -150,18 +164,19 @@ final class BackupArchive {
       try (Cursor image = db.rawQuery(
           "SELECT rowid,hash,width,height,data FROM images i WHERE "
               + (after == null ? "" : "rowid>? AND ")
-              + "(EXISTS(SELECT 1 FROM record_images r WHERE r.image_hash=i.hash)"
-              + " OR EXISTS(SELECT 1 FROM version_images v WHERE v.image_hash=i.hash)) ORDER BY rowid" + PAGE,
+              + REFERENCED_IMAGE + " ORDER BY rowid" + PAGE,
           after)) {
         while (image.moveToNext()) {
           task.check();
           if (++images > MAX_IMAGES) throw invalid("圖片筆數超過上限");
           pageSize++;
           after = new String[]{Long.toString(image.getLong(0))};
-          writer.beginObject().name("sha256").value(image.getString(1)).name("mime").value("image/png")
-              .name("width").value(image.getLong(2)).name("height").value(image.getLong(3)).name("data");
-          writer.image(image.getBlob(4));
-          writer.endObject();
+          byte[] png = image.getBlob(4);
+          out.writeInt(png.length);
+          out.write(image.getString(1).getBytes(StandardCharsets.US_ASCII));
+          out.writeShort(image.getInt(2));
+          out.writeShort(image.getInt(3));
+          out.write(png);
         }
       }
     } while (pageSize == PAGE_SIZE);
@@ -185,8 +200,21 @@ final class BackupArchive {
   static final class LimitedOutput extends FilterOutputStream {
     long count;final BackupTask task;
     LimitedOutput(OutputStream out,BackupTask task){super(out);this.task=task;}
-    public void write(int b)throws IOException{byte[] one={(byte)b};write(one,0,1);}
-    public void write(byte[] bytes,int offset,int length)throws IOException{task.check();if(count+length>BackupStreamCrypto.MAX_BYTES)throw invalid(BackupStreamCrypto.TOO_LARGE);out.write(bytes,offset,length);count+=length;task.progress(count);}
+    private void checkSize(int length) throws IOException {
+      task.check();
+      if (count + length > BackupStreamCrypto.MAX_BYTES) throw invalid(BackupStreamCrypto.TOO_LARGE);
+    }
+    @Override public void write(int b) throws IOException {
+      checkSize(1);
+      out.write(b);
+      task.progress(++count);
+    }
+    @Override public void write(byte[] bytes, int offset, int length) throws IOException {
+      checkSize(length);
+      out.write(bytes, offset, length);
+      count += length;
+      task.progress(count);
+    }
   }
   /** Limits the lexical size and depth before JsonReader can allocate a giant token. */
   static final class TokenReader extends FilterReader {
@@ -209,33 +237,138 @@ final class BackupArchive {
     List<String> refs(String kind,String owner){List<String> result=new ArrayList<>();try(Cursor c=db.rawQuery("SELECT hash FROM refs WHERE kind=? AND owner=? ORDER BY position",new String[]{kind,owner})){while(c.moveToNext())result.add(c.getString(0));}return result;}
     public void close(){if(db.isOpen())db.close();}
   }
-  static Stage read(File json,File database,BackupTask task)throws Exception {
-    if(json.length()>BackupStreamCrypto.MAX_BYTES)throw invalid(BackupStreamCrypto.TOO_LARGE);
-    Stage stage=new Stage(database);boolean success=false;task.phase("檢查備份",json.length());
-    try {
-    try(InputStream source=new BufferedInputStream(new FileInputStream(json));JsonReader r=new JsonReader(new TokenReader(new InputStreamReader(new FilterInputStream(source){long count;public int read(byte[] b,int o,int n)throws IOException{task.check();int got=super.read(b,o,n);if(got>0){count+=got;task.progress(count);}return got;}},StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT))))) {
+  static Stage read(File backup, File database, BackupTask task) throws Exception {
+    if (backup.length() > BackupStreamCrypto.MAX_BYTES) throw invalid(BackupStreamCrypto.TOO_LARGE);
+    task.phase("檢查備份", backup.length());
+    task.check();
+    Stage stage = new Stage(database);
+    boolean success = false;
+    try (BufferedInputStream source = new BufferedInputStream(new FileInputStream(backup), 64 * 1024)) {
+      source.mark(MAGIC.length);
+      byte[] prefix = new byte[MAGIC.length];
+      new DataInputStream(source).readFully(prefix);
+      boolean packaged = Arrays.equals(prefix, MAGIC);
+      source.reset();
+      DataInputStream in = new DataInputStream(new ArchiveInput(source, task));
       stage.db.beginTransaction();
       try {
-        Set<String> seen=new HashSet<>();r.beginObject();
-        while(r.hasNext()) {
-          task.check();String name=r.nextName();if(!seen.add(name))throw invalid("備份含重複欄位");
-          switch(name) {
-            case "format":if(!"HuangNotify".equals(string(r)))throw invalid("不支援的備份格式");break;
-            case "version":long version=integer(r);if(version<1||version>3)throw invalid("不支援的備份版本");stage.format=(int)version;break;
-            case "created":stage.created=integer(r);if(stage.created<0||stage.created>32503680000000L)throw invalid("備份日期錯誤");break;
-            case "records":readRecords(r,stage,task);break;
-            case "images":readImages(r,stage,task);break;
-            case "settings":readSettings(r,stage,task);break;
-            default:throw invalid("未知的備份欄位");
-          }
+        if (packaged) {
+          in.readFully(prefix);
+          if (in.readUnsignedByte() != CONTAINER_VERSION) throw invalid("不支援的備份版本");
+          readPngAttachments(in, stage, task);
         }
-        r.endObject();if(r.peek()!=JsonToken.END_DOCUMENT)throw invalid("備份含多餘內容");
-        if(!seen.containsAll(Arrays.asList("format","version","created","records","settings")) || (stage.format>=2)!=seen.contains("images"))throw invalid("備份缺少必要欄位或版本不符");
-        validateRelations(stage,task);stage.db.setTransactionSuccessful();
-      } finally {stage.db.endTransaction();}
+        readMetadata(in, stage, task, packaged);
+        validateRelations(stage, task);
+        stage.db.setTransactionSuccessful();
+      } finally {
+        stage.db.endTransaction();
+      }
+      success = true;
+      return stage;
+    } finally {
+      if (!success) stage.close();
     }
-      success=true;return stage;
-    } finally {if(!success)stage.close();}
+  }
+
+  private static final class ArchiveInput extends FilterInputStream {
+    private final BackupTask task;
+    private long count;
+    ArchiveInput(InputStream source, BackupTask task) { super(source); this.task = task; }
+    @Override public int read() throws IOException {
+      task.check();
+      int value = in.read();
+      if (value != -1) consumed(1);
+      return value;
+    }
+    @Override public int read(byte[] bytes, int offset, int length) throws IOException {
+      task.check();
+      int read = in.read(bytes, offset, length);
+      if (read > 0) consumed(read);
+      return read;
+    }
+    private void consumed(int bytes) {
+      count += bytes;
+      if (count > BackupStreamCrypto.MAX_BYTES) throw invalid(BackupStreamCrypto.TOO_LARGE);
+      task.progress(count);
+    }
+  }
+
+  private static void readMetadata(InputStream source, Stage stage, BackupTask task, boolean packaged)
+      throws Exception {
+    CharsetDecoder utf8 = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT);
+    try (JsonReader reader = new JsonReader(new TokenReader(new InputStreamReader(source, utf8)))) {
+      Set<String> seen = new HashSet<>();
+      reader.beginObject();
+      while (reader.hasNext()) {
+        task.check();
+        String name = reader.nextName();
+        if (!seen.add(name)) throw invalid("備份含重複欄位");
+        switch (name) {
+          case "format":
+            if (!"HuangNotify".equals(string(reader))) throw invalid("不支援的備份格式");
+            break;
+          case "version":
+            long version = integer(reader);
+            if (packaged ? version != VERSION : version < 1 || version > 3) {
+              throw invalid("不支援的備份版本");
+            }
+            stage.format = (int) version;
+            break;
+          case "created":
+            stage.created = integer(reader);
+            if (stage.created < 0 || stage.created > 32503680000000L) throw invalid("備份日期錯誤");
+            break;
+          case "records":
+            readRecords(reader, stage, task);
+            break;
+          case "images":
+            if (packaged) throw invalid("備份含重複的圖片資料");
+            readImages(reader, stage, task);
+            break;
+          case "settings":
+            readSettings(reader, stage, task);
+            break;
+          default:
+            throw invalid("未知的備份欄位");
+        }
+      }
+      reader.endObject();
+      if (reader.peek() != JsonToken.END_DOCUMENT) throw invalid("備份含多餘內容");
+      if (!seen.containsAll(Arrays.asList("format", "version", "created", "records", "settings"))
+          || (!packaged && stage.format >= 2) != seen.contains("images")) {
+        throw invalid("備份缺少必要欄位或版本不符");
+      }
+    }
+  }
+
+  private static void readPngAttachments(DataInputStream in, Stage stage, BackupTask task)
+      throws IOException {
+    byte[] hashBytes = new byte[64];
+    int length;
+    while ((length = in.readInt()) != 0) {
+      task.check();
+      if (++stage.images > MAX_IMAGES) throw invalid("圖片數量超過上限");
+      if (length < 1 || length > NotificationImages.MAX_IMAGE_BYTES) throw invalid("圖片大小超過上限");
+      in.readFully(hashBytes);
+      String hash = new String(hashBytes, StandardCharsets.US_ASCII);
+      if (!IMAGE_HASH.matcher(hash).matches()) throw invalid("備份圖片識別碼錯誤");
+      int width = in.readUnsignedShort(), height = in.readUnsignedShort();
+      byte[] png = new byte[length];
+      in.readFully(png);
+      stageImage(stage, hash, width, height, png);
+    }
+  }
+
+  private static void stageImage(Stage stage, String hash, int width, int height, byte[] png)
+      throws IOException {
+    NotificationImages.validate(png, hash, width, height);
+    ContentValues image = new ContentValues();
+    image.put("hash", hash);
+    image.put("width", width);
+    image.put("height", height);
+    image.put("data", png);
+    stage.db.insertOrThrow("images", null, image);
   }
   private static String string(JsonReader r)throws IOException{if(r.peek()!=JsonToken.STRING)throw invalid("備份文字欄位格式錯誤");return r.nextString();}
   private static long integer(JsonReader r)throws IOException {
@@ -293,8 +426,7 @@ final class BackupArchive {
       String hash=data.getString("sha256"),encoded=data.getString("data");
       if(!hash.matches("[0-9a-f]{64}")||!"image/png".equals(data.getString("mime"))||encoded.length()>((NotificationImages.MAX_IMAGE_BYTES+2)/3)*4)throw invalid("圖片格式或大小錯誤");
       int width=(int)BackupFormat.integer(data,"width",1,NotificationImages.MAX_EDGE),height=(int)BackupFormat.integer(data,"height",1,NotificationImages.MAX_EDGE);
-      byte[] bytes=Base64.getDecoder().decode(encoded);NotificationImages.validate(bytes,hash,width,height);
-      ContentValues v=new ContentValues();v.put("hash",hash);v.put("data",bytes);v.put("width",width);v.put("height",height);stage.db.insertOrThrow("images",null,v);
+      stageImage(stage, hash, width, height, Base64.getDecoder().decode(encoded));
     }r.endArray();
   }
   private static void readSettings(JsonReader r,Stage stage,BackupTask task)throws Exception {

@@ -22,7 +22,7 @@ final class BackupFiles {
     Session(Context c)throws IOException {
       File root=new File(c.getCacheDir(),"backup-work");if(!root.isDirectory()&&!root.mkdirs())throw new IOException();
       dir=new File(root,"op_"+UUID.randomUUID());synchronized(ACTIVE_DIRS){if(!dir.mkdir())throw new IOException();ACTIVE_DIRS.add(dir.getAbsolutePath());}
-      input=new File(dir,"input.bin");plain=new File(dir,"plain.json");output=new File(dir,"output.hnbk");database=new File(dir,"stage.db");
+      input=new File(dir,"input.bin");plain=new File(dir,"plain.hnbackup");output=new File(dir,"output.hnbk");database=new File(dir,"stage.db");
     }
     public void close(){try{if(stage!=null){stage.close();stage=null;}}finally{synchronized(ACTIVE_DIRS){erase(dir);ACTIVE_DIRS.remove(dir.getAbsolutePath());}}}
   }
