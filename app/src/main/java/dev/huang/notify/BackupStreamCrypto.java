@@ -10,11 +10,16 @@ import javax.crypto.spec.*;
 
 /** HNBK2: bounded AES-GCM frames, with an authenticated terminal frame and strict EOF. */
 public final class BackupStreamCrypto {
-  static final int MAX_MIB=250;
+  static final int MAX_MIB=500;
   public static final long MAX_BYTES=MAX_MIB*1024L*1024L;
   static final String TOO_LARGE="單份備份超過 "+MAX_MIB+" MiB，請先整理通知或圖片";
   static final int CHUNK=64*1024, ITERATIONS=210000, HEADER=33;
-  public static final long MAX_FILE_BYTES=MAX_BYTES+((MAX_BYTES+CHUNK-1)/CHUNK+1)*20+HEADER;
+  public static final long MAX_FILE_BYTES=encryptedBytes(MAX_BYTES);
+
+  static long encryptedBytes(long plainBytes) {
+    long dataFrames = (plainBytes + CHUNK - 1) / CHUNK;
+    return plainBytes + (dataFrames + 1) * 20 + HEADER;
+  }
   static final byte[] MAGIC={'H','N','B','K',2};
   public interface Progress { void update(long bytes); }
   private BackupStreamCrypto() {}

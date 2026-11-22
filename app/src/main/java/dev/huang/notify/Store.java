@@ -655,9 +655,16 @@ public final class Store extends SQLiteOpenHelper {
     try(Cursor c=db.rawQuery("PRAGMA wal_checkpoint(FULL)",null)) {
       if(!c.moveToFirst() || c.getInt(0)!=0 || c.getInt(1)!=c.getInt(2))throw new BackupProblem("資料庫正忙碌，請稍後再備份");
     }
-    task.phase("複製一致性快照",databaseFile.length());db.beginTransaction();
-    try(java.io.InputStream in=new java.io.BufferedInputStream(new java.io.FileInputStream(databaseFile));java.io.OutputStream out=new java.io.BufferedOutputStream(new java.io.FileOutputStream(target))) {
-      BackupFiles.copy(in,out,Long.MAX_VALUE,task);db.setTransactionSuccessful();
+    db.beginTransaction();
+    try {
+      long bytes = databaseFile.length();
+      BackupFiles.requireSpace(bytes + BackupFiles.SPACE_MARGIN, BackupFiles.availableBytes(target.getParentFile()));
+      task.phase("複製一致性快照", bytes);
+      try (java.io.InputStream in = new java.io.BufferedInputStream(new java.io.FileInputStream(databaseFile));
+          java.io.OutputStream out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(target))) {
+        BackupFiles.copy(in, out, Long.MAX_VALUE, task);
+      }
+      db.setTransactionSuccessful();
     } finally {db.endTransaction();}
   }
   private static ContentValues importValues(Cursor c,boolean record) {

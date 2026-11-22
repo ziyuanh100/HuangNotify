@@ -42,6 +42,17 @@ public class HistoryBackupTest extends AndroidTestCase {
     store.pruneImages();
   }
 
+  public void testLocalSpaceCheckReportsTheShortfall() {
+    BackupFiles.requireSpace(BackupFiles.SPACE_MARGIN, BackupFiles.SPACE_MARGIN);
+    try {
+      BackupFiles.requireSpace(BackupFiles.SPACE_MARGIN, BackupFiles.SPACE_MARGIN - 1024);
+      fail("Accepted insufficient local temporary space");
+    } catch (BackupProblem expected) {
+      assertEquals(BackupFiles.Failure.SPACE, BackupFiles.failure(expected));
+      assertTrue(BackupFiles.error(expected).contains("還差 1.0 KiB"));
+    }
+  }
+
   public void testFullEncryptedBackupRestoresQuarterMillionVersionsAndAttachments() throws Exception {
     Context context = getContext();
     String record = UUID.randomUUID().toString();
