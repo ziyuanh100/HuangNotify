@@ -43,9 +43,11 @@ public class BackupUiTest extends ActivityInstrumentationTestCase2<MainActivity>
       View screen = options.getWindow().getDecorView();
       assertNotNull(find(screen, "建立備份"));
       assertNotNull(findContaining(screen, "預估容量"));
-      assertNotNull(findContaining(screen, "/ 250 MiB"));
+      assertNotNull(findContaining(screen, "/ " + BackupStreamCrypto.MAX_MIB + " MiB"));
       assertNotNull(findContaining(screen, "/ 2,000,000 筆"));
-      for (String label : new String[]{"通知與備註", "更新歷程", "圖片"}) assertNotNull(find(screen, label));
+      for (String label : new String[]{"通知與備註", "更新歷程", "圖片", "本機暫存", "預估所需", "目前可用"}) {
+        assertNotNull(label, find(screen, label));
+      }
       assertTrue(options.getButton(AppDialog.BUTTON_POSITIVE).isEnabled());
       assertTrue(options.getButton(AppDialog.BUTTON_NEUTRAL).isEnabled());
       capture("backup-capacity-preview.png");

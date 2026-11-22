@@ -95,7 +95,7 @@ final class BackupScreen implements BackupOperation.Observer {
     summary.addView(total);
     b.addView(summary);
     u.gap(b, 10);
-    b.addView(u.text("完整備份包含所有通知、備註、收藏、圖片與歷程。需用 HuangNotify 1.9.0 以上版本還原。",
+    b.addView(u.text("完整備份包含通知、備註、收藏、圖片與歷程。超過 250 MiB 的備份，請用 1.10.0 以上版本還原。",
         13, u.muted, false));
     EditText password = password("備份密碼（至少 8 個字元）"), confirm = password("再次輸入密碼");
     u.gap(b, 12);
@@ -133,19 +133,25 @@ final class BackupScreen implements BackupOperation.Observer {
       prepareExport(secret);
     });
     Store.SEARCH.execute(() -> {
-      BackupEstimate result;
+      BackupEstimate result = null;
+      long required = 0, available = -1;
       try {
         cancellation.throwIfCanceled();
-        result = BackupEstimate.read(Store.get(activity).getReadableDatabase(), cancellation);
+        Store store = Store.get(activity);
+        result = BackupEstimate.read(store.getReadableDatabase(), cancellation);
+        required = store.databaseBytes() + BackupStreamCrypto.encryptedBytes(result.totalBytes)
+            + BackupFiles.SPACE_MARGIN;
+        available = BackupFiles.availableBytes(activity.getCacheDir());
       } catch (OperationCanceledException cancelled) {
         return;
       } catch (RuntimeException unavailable) {
-        result = null;
+        // Counts and capacity can still be displayed if only the disk query failed.
       }
       BackupEstimate estimate = result;
+      long requiredBytes = required, availableBytes = available;
       handler.post(() -> {
         if (destroyed || !dialog.isShowing() || cancellation.isCanceled()) return;
-        renderEstimate(summary, total, estimate);
+        renderEstimate(summary, total, estimate, requiredBytes, availableBytes);
         boolean allowed = estimate == null || !estimate.exceedsCountLimit();
         encrypted.setEnabled(allowed);
         plain.setEnabled(allowed);
@@ -153,7 +159,8 @@ final class BackupScreen implements BackupOperation.Observer {
     });
   }
 
-  private void renderEstimate(LinearLayout summary, TextView total, BackupEstimate estimate) {
+  private void renderEstimate(LinearLayout summary, TextView total, BackupEstimate estimate,
+      long required, long available) {
     String cap = BackupStreamCrypto.MAX_MIB + " MiB";
     if (estimate == null) {
       total.setText("無法估算容量");
@@ -162,7 +169,7 @@ final class BackupScreen implements BackupOperation.Observer {
       return;
     }
     NumberFormat number = NumberFormat.getIntegerInstance(Locale.TAIWAN);
-    total.setText("預估容量 " + estimateSize(estimate.totalBytes) + " / " + cap);
+    total.setText("預估容量 " + BackupEstimate.size(estimate.totalBytes) + " / " + cap);
     u.gap(summary, 6);
     estimateRow(summary, "通知與備註", estimate.recordBytes);
     estimateRow(summary, "更新歷程", estimate.historyBytes);
@@ -170,34 +177,40 @@ final class BackupScreen implements BackupOperation.Observer {
     u.gap(summary, 6);
     summary.addView(u.text("歷程 " + number.format(estimate.versions) + " / "
         + BackupArchive.VERSION_LIMIT + "（含首次記錄）", 13, u.muted, false));
-    if (estimate.versions > BackupArchive.MAX_VERSIONS) {
-      summary.addView(u.text(BackupArchive.TOO_MANY_VERSIONS, 13, u.danger, true));
-    }
-    if (estimate.records > BackupArchive.MAX_RECORDS) {
-      summary.addView(u.text("通知超過 " + number.format(BackupArchive.MAX_RECORDS) + " 則",
-          13, u.danger, true));
-    }
-    if (estimate.images > BackupArchive.MAX_IMAGES) {
-      summary.addView(u.text("不同圖片超過 " + number.format(BackupArchive.MAX_IMAGES) + " 張",
-          13, u.danger, true));
-    }
+    countWarning(summary, "更新歷程", estimate.versions - BackupArchive.MAX_VERSIONS, "筆", number);
+    countWarning(summary, "通知", estimate.records - BackupArchive.MAX_RECORDS, "則", number);
+    countWarning(summary, "不同圖片", estimate.images - BackupArchive.MAX_IMAGES, "張", number);
     if (estimate.totalBytes > BackupStreamCrypto.MAX_BYTES) {
-      summary.addView(u.text("預估超過 " + cap + "，以匯出時檢查為準。", 13, u.danger, true));
+      summary.addView(u.text("預估超出容量上限 "
+          + BackupEstimate.size(estimate.totalBytes - BackupStreamCrypto.MAX_BYTES)
+          + "，以實際匯出容量為準。", 13, u.danger, true));
     }
+    u.gap(summary, 10);
+    summary.addView(u.text("本機暫存", 14, u.ink, true));
+    if (available < 0) {
+      summary.addView(u.text("暫時無法取得手機可用空間。", 13, u.muted, false));
+      return;
+    }
+    estimateRow(summary, "預估所需", required);
+    estimateRow(summary, "目前可用", available);
+    if (available < required) {
+      summary.addView(u.text("暫存空間預估還差 " + BackupEstimate.size(required - available)
+          + "。可先釋出手機空間。", 13, u.danger, true));
+    }
+    summary.addView(u.text("依資料庫快照與加密檔估算，儲存位置需另有空間。", 12, u.muted, false));
+  }
+
+  private void countWarning(LinearLayout summary, String label, long excess, String unit, NumberFormat number) {
+    if (excess <= 0) return;
+    summary.addView(u.text(label + "超出上限 " + number.format(excess) + " " + unit,
+        13, u.danger, true));
   }
 
   private void estimateRow(LinearLayout summary, String label, long bytes) {
     LinearLayout row = u.row();
     row.addView(u.text(label, 14, u.ink, false), new LinearLayout.LayoutParams(0, -2, 1));
-    row.addView(u.text(estimateSize(bytes), 14, u.ink, false));
+    row.addView(u.text(BackupEstimate.size(bytes), 14, u.ink, false));
     summary.addView(row);
-  }
-
-  private static String estimateSize(long bytes) {
-    if (bytes == 0) return "0 KiB";
-    if (bytes < 1024) return "小於 1 KiB";
-    if (bytes < 1024 * 1024) return String.format(Locale.TAIWAN, "%.1f KiB", bytes / 1024.0);
-    return String.format(Locale.TAIWAN, "%.1f MiB", bytes / (1024.0 * 1024));
   }
   void prepareExport(char[] password){BackupOperation op=BackupOperation.begin(activity,BackupOperation.State.EXPORTING);if(op==null){if(password!=null)Arrays.fill(password,'\0');toast("已有備份作業進行中");return;}op.export(password);update();}
   void chooseImport(){BackupOperation op=BackupOperation.begin(activity,BackupOperation.State.IMPORT_PICKER);if(op==null){toast("已有備份作業進行中");update();return;}op.pickerLaunched=true;try{activity.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),102);}catch(Exception e){op.fail(e);}}

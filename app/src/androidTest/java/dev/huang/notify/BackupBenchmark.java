@@ -2,6 +2,7 @@ package dev.huang.notify;
 
 import android.content.Context;
 import android.database.Cursor;
+import android.database.DatabaseUtils;
 import android.database.sqlite.SQLiteDatabase;
 import android.graphics.Bitmap;
 import android.net.Uri;
@@ -22,7 +23,6 @@ final class BackupBenchmark {
   private static final Uri TREE = Uri.parse("content://dev.huang.notify.testdocs/tree/root");
   private static final char[] PASSWORD = "benchmark-password-123".toCharArray();
   private static final int TRIALS = 5, NOTE_LIMIT = 100000;
-  private static final int FIRST_PNG_CONTAINER_CODE = 27;
 
   static void run(Context context, String kind, int expectedMiB, java.util.function.Consumer<String> progress)
       throws Exception {
@@ -35,31 +35,20 @@ final class BackupBenchmark {
         .put("api", android.os.Build.VERSION.SDK_INT).put("device", android.os.Build.MODEL)
         .put("abi", android.os.Build.SUPPORTED_ABIS[0]).put("limit_bytes", limit)
         .put("kind", kind).put("warmups_per_mode", 1).put("measured_runs_per_mode", TRIALS)
-        .put("destination", "local debug DocumentsProvider").put("cases", new JSONArray());
-    File comparison = context.getFileStreamPath("backup-size-source.hnjson");
+        .put("destination", "local debug DocumentsProvider");
+    File comparison = context.getFileStreamPath("backup-benchmark-source.hnbackup");
+    boolean hasBaseline = comparison.isFile();
     try {
-      if (kind.equals("images") && comparison.isFile()) {
-        progress.accept("Comparing backup size with the identical previous-version dataset");
-        report.put("same_data", compareSameData(context, comparison));
+      if (hasBaseline) {
+        progress.accept("Restoring the identical previous-version dataset");
+        long baselineBytes = comparison.length();
+        long[] counts = loadBaseline(context, comparison);
+        report.put("same_data", dataset(context, baselineBytes, counts, progress));
       }
       progress.accept("Preparing " + kind + " at " + limit + " bytes");
       long[] counts = Store.IO.submit(() -> seed(context, kind, limit)).get();
-      report.put("records", counts[0]).put("images", counts[1]);
-      for (boolean encrypted : new boolean[]{false, true}) {
-        JSONArray runs = new JSONArray();
-        JSONObject mode = new JSONObject().put("encrypted", encrypted).put("runs", runs);
-        report.getJSONArray("cases").put(mode);
-        for (int trial = 0; trial <= TRIALS; trial++) {
-          progress.accept(BuildConfig.VERSION_NAME + " " + kind + " " + (encrypted ? "encrypted" : "plain")
-              + " trial " + trial + "/" + TRIALS);
-          JSONObject sample = measure(context, encrypted, limit, counts);
-          if (trial == 0) mode.put("warmup", sample);
-          else runs.put(sample);
-        }
-        mode.put("export_median_ms", median(runs, "export_ms"))
-            .put("restore_median_ms", median(runs, "restore_ms"));
-      }
-      if (kind.equals("images") && BuildConfig.VERSION_CODE < FIRST_PNG_CONTAINER_CODE) {
+      report.put("at_limit", dataset(context, limit, counts, progress));
+      if (!hasBaseline) {
         try (BackupFiles.Session fixture = BackupFiles.export(context, null, new BackupTask())) {
           if (fixture.readyBytes != limit) throw new AssertionError("The baseline fixture is not at capacity");
           Files.copy(fixture.ready.toPath(), comparison.toPath());
@@ -73,54 +62,67 @@ final class BackupBenchmark {
     }
   }
 
-  private static JSONObject compareSameData(Context context, File source) throws Exception {
+  private static JSONObject dataset(Context context, long size, long[] counts,
+      java.util.function.Consumer<String> progress) throws Exception {
+    JSONArray cases = new JSONArray();
+    for (boolean encrypted : new boolean[]{false, true}) {
+      JSONArray runs = new JSONArray();
+      JSONObject mode = new JSONObject().put("encrypted", encrypted).put("runs", runs);
+      cases.put(mode);
+      for (int trial = 0; trial <= TRIALS; trial++) {
+        progress.accept(BuildConfig.VERSION_NAME + " " + (size / (1024 * 1024)) + " MiB "
+            + (encrypted ? "encrypted" : "plain") + " trial " + trial + "/" + TRIALS);
+        JSONObject sample = measure(context, encrypted, size, counts);
+        if (trial == 0) mode.put("warmup", sample);
+        else runs.put(sample);
+      }
+      mode.put("export_median_ms", median(runs, "export_ms"))
+          .put("restore_median_ms", median(runs, "restore_ms"));
+    }
+    return new JSONObject().put("plain_bytes", size).put("records", counts[0]).put("images", counts[1])
+        .put("versions", counts[2]).put("cases", cases);
+  }
+
+  private static long[] loadBaseline(Context context, File source) throws Exception {
     Store store = Store.get(context);
     BackupTask task = new BackupTask();
-    long sourceBytes = source.length();
-    JSONObject sizes;
-    try (BackupFiles.Session session = new BackupFiles.Session(context)) {
-      try (BackupArchive.Stage stage = BackupArchive.read(source, session.database, task)) {
-        int restored = Store.IO.submit(() -> {
-          reset(store);
-          return store.restoreStage(stage, true, task)[0];
-        }).get();
-        if (restored != stage.records) throw new AssertionError("The baseline fixture did not restore");
-        sizes = new JSONObject().put("previous_plain_bytes", sourceBytes).put("records", stage.records)
-            .put("images", stage.images).put("versions", stage.versions);
-      }
+    try (BackupFiles.Session session = new BackupFiles.Session(context);
+        BackupArchive.Stage stage = BackupArchive.read(source, session.database, task)) {
+      Files.delete(source.toPath());
+      int restored = Store.IO.submit(() -> {
+        reset(store);
+        return store.restoreStage(stage, true, task)[0];
+      }).get();
+      if (restored != stage.records) throw new AssertionError("The baseline fixture did not restore");
+      return new long[]{stage.records, stage.images, stage.versions};
     } finally {
       source.delete();
     }
-    try (BackupFiles.Session plain = BackupFiles.export(context, null, new BackupTask())) {
-      if (plain.readyBytes >= sourceBytes) throw new AssertionError("The PNG bundle did not reduce the file size");
-      sizes.put("current_plain_bytes", plain.readyBytes);
-    }
-    try (BackupFiles.Session encrypted = BackupFiles.export(context, PASSWORD, new BackupTask())) {
-      sizes.put("current_encrypted_bytes", encrypted.readyBytes);
-    }
-    return sizes;
   }
 
   private static JSONObject measure(Context context, boolean encrypted, long limit, long[] counts) throws Exception {
     AutoBackup.Documents docs = new AutoBackup.Documents(context, TREE);
-    String id = docs.create("ceiling-" + (encrypted ? "encrypted.hnbk" : "plain.hnjson"));
+    String id = docs.create("ceiling-" + (encrypted ? "encrypted.hnbk" : "plain.hnbackup"));
     Uri uri = Uri.parse(id);
     BackupTask export = new BackupTask();
     File temp = new File(context.getCacheDir(), "backup-work");
     long exportMs, bytes, exportTemp;
     JSONObject exportPhases;
     try {
+      long exportPss;
       try (Sampling memory = new Sampling(temp)) {
         long start = System.nanoTime();
         try (BackupFiles.Session session = BackupFiles.export(context, encrypted ? PASSWORD : null, export)) {
           bytes = session.ready.length();
-          long expected = encrypted ? BackupStreamCrypto.MAX_FILE_BYTES : limit;
+          long frames = (limit + BackupStreamCrypto.CHUNK - 1) / BackupStreamCrypto.CHUNK;
+          long expected = encrypted ? limit + (frames + 1) * 20 + BackupStreamCrypto.HEADER : limit;
           if (bytes != expected) throw new AssertionError("Expected exactly " + expected + " bytes, got " + bytes);
           BackupFiles.save(context, session, uri, export);
         }
         exportMs = millis(start);
         exportPhases = new JSONObject(export.timingsMillis());
         exportTemp = memory.temp;
+        exportPss = memory.pss;
       }
       // Prepare an empty database outside the timer so this measures a real restore.
       Store store = Store.get(context);
@@ -130,7 +132,8 @@ final class BackupBenchmark {
         long start = System.nanoTime();
         try (BackupFiles.Session session = BackupFiles.read(context, uri, restore)) {
           if (encrypted) BackupFiles.unlock(session, PASSWORD, restore);
-          if (session.stage.records != counts[0] || session.stage.images != counts[1]) {
+          if (session.stage.records != counts[0] || session.stage.images != counts[1]
+              || session.stage.versions != counts[2]) {
             throw new AssertionError("Archive counts changed");
           }
           int restored = Store.IO.submit(() -> store.restoreStage(session.stage, true, restore)).get()[0];
@@ -138,12 +141,13 @@ final class BackupBenchmark {
         }
         long restoreMs = millis(start);
         JSONObject restorePhases = new JSONObject(restore.timingsMillis());
-        if (store.counts()[0] != counts[0] || store.imageUsage()[0] != counts[1]) {
+        if (!Arrays.equals(counts(store), counts)) {
           throw new AssertionError("Restored database counts changed");
         }
         return new JSONObject().put("output_bytes", bytes).put("export_ms", exportMs).put("restore_ms", restoreMs)
             .put("export_phases_ms", exportPhases).put("restore_phases_ms", restorePhases)
             .put("export_temp_bytes", exportTemp).put("restore_temp_bytes", memory.temp)
+            .put("sampled_export_pss_bytes", exportPss)
             .put("sampled_restore_pss_bytes", memory.pss);
       }
     } finally {
@@ -182,10 +186,7 @@ final class BackupBenchmark {
             if (image == null) throw new AssertionError("Image fixture could not be encoded");
             store.capture("image-" + index, "benchmark.fixture", "Fixture", "Image", "Synthetic", index,
                 new NotificationImages.Result(Collections.singletonList(image), "saved"));
-            // The harness is compiled against both the legacy JSON writer and the PNG writer.
-            long imageBytes = BuildConfig.VERSION_CODE < FIRST_PNG_CONTAINER_CODE
-                ? ((image.data.length + 2L) / 3) * 4 : image.data.length;
-            estimate += imageBytes + 1200;
+            estimate += image.data.length + 1200L;
             index++;
           }
         } finally {
@@ -223,7 +224,12 @@ final class BackupBenchmark {
       db.endTransaction();
     }
     if (bytes != limit || bytes(db) != limit) throw new AssertionError("Fixture is not exactly at the limit");
-    return new long[]{store.counts()[0], store.imageUsage()[0]};
+    return counts(store);
+  }
+
+  private static long[] counts(Store store) {
+    long versions = DatabaseUtils.longForQuery(store.getReadableDatabase(), "SELECT COUNT(*) FROM versions", null);
+    return new long[]{store.counts()[0], store.imageUsage()[0], versions};
   }
 
   private static long bytes(SQLiteDatabase db) throws Exception {

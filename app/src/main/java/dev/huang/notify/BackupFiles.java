@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutionException;
 /** Operation-owned private files for streaming backup and restore. */
 final class BackupFiles {
   enum Failure { CANCELLED, SPACE, LOCATION, OTHER }
+  static final long SPACE_MARGIN = 4 * 1024 * 1024L;
   private static final String NO_SPACE="儲存空間不足，請先清理可用空間再重試";
   private static final String LOCATION_ERROR="無法存取備份位置，請檢查權限或重新選擇";
   private static final Set<String> ACTIVE_DIRS=new HashSet<>();
@@ -29,11 +30,19 @@ final class BackupFiles {
   static void erase(File file){File[] children=file.listFiles();if(children!=null)for(File child:children)erase(child);file.delete();}
   static void cleanStale(Context c){synchronized(ACTIVE_DIRS){File[] dirs=new File(c.getCacheDir(),"backup-work").listFiles();if(dirs!=null)for(File dir:dirs)if(dir.getName().matches("op_[0-9a-f-]{36}")&&!ACTIVE_DIRS.contains(dir.getAbsolutePath())&&System.currentTimeMillis()-dir.lastModified()>86400000L)erase(dir);}}
   static void cleanInterrupted(Context c){synchronized(ACTIVE_DIRS){File[] dirs=new File(c.getCacheDir(),"backup-work").listFiles();if(dirs!=null)for(File dir:dirs)if(dir.getName().matches("op_[0-9a-f-]{36}")&&!ACTIVE_DIRS.contains(dir.getAbsolutePath()))erase(dir);}}
-  static void space(Context c,long needed){if(new StatFs(c.getCacheDir().getAbsolutePath()).getAvailableBytes()<needed+4*1024*1024L)throw new BackupProblem(NO_SPACE,Failure.SPACE);}
+  static long availableBytes(File directory) {
+    return new StatFs(directory.getAbsolutePath()).getAvailableBytes();
+  }
+  static void requireSpace(long required, long available) {
+    if (available < required) {
+      throw new BackupProblem("本機暫存空間不足，還差 " + BackupEstimate.size(required - available)
+          + "。請先釋出手機空間再重試。", Failure.SPACE);
+    }
+  }
   static Session export(Context context,char[] password,BackupTask task)throws Exception {
     Session session=new Session(context);boolean success=false;File snapshot=new File(session.dir,"snapshot.db");
     try {
-      task.check();File live=context.getDatabasePath("notifications.db");space(context,live.length()+new File(live.getPath()+"-wal").length());task.phase("準備備份",0);
+      task.check();task.phase("準備備份",0);
       Store.IO.submit(()->{Store.get(context).snapshot(snapshot,task);return null;}).get();task.check();
       session.encrypted=password!=null;session.ready=session.encrypted?session.output:session.plain;task.encryptedExport=session.encrypted;
       MessageDigest hash=MessageDigest.getInstance("SHA-256");
@@ -76,8 +85,7 @@ final class BackupFiles {
     } finally {session.plain.delete();}
   }
   private static void spaceForDecryption(Session session){
-    if(new StatFs(session.dir.getAbsolutePath()).getAvailableBytes()<Math.min(session.input.length(),BackupStreamCrypto.MAX_BYTES))
-      throw new BackupProblem(NO_SPACE,Failure.SPACE);
+    requireSpace(Math.min(session.input.length(), BackupStreamCrypto.MAX_BYTES), availableBytes(session.dir));
   }
   static long copy(InputStream in,OutputStream out,long maximum,BackupTask task)throws IOException {
     byte[] buffer=new byte[64*1024];long count=0;int n;
@@ -111,13 +119,13 @@ final class BackupFiles {
   }
   static String error(Throwable error){
     while(error instanceof ExecutionException&&error.getCause()!=null)error=error.getCause();
+    if(error instanceof BackupProblem)return error.getMessage();
     switch(failure(error)){
       case CANCELLED:return "作業已取消，原有紀錄與備份保留";
       case SPACE:return NO_SPACE;
       case LOCATION:return LOCATION_ERROR;
       default:break;
     }
-    if(error instanceof BackupProblem)return error.getMessage();
     if(error instanceof javax.crypto.BadPaddingException)return "密碼錯誤或備份檔已損壞";
     if(error instanceof IOException)return "檔案無法讀寫、未完整儲存或驗證失敗，請檢查位置後重試";
     return "備份格式不正確、已損壞或含衝突資料；原有紀錄未變更";

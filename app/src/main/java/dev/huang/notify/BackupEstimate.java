@@ -3,6 +3,7 @@ package dev.huang.notify;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.os.CancellationSignal;
+import java.util.Locale;
 
 /** Estimates serialized size from a single read of the live database. */
 final class BackupEstimate {
@@ -49,6 +50,13 @@ final class BackupEstimate {
   boolean exceedsCountLimit() {
     return versions > BackupArchive.MAX_VERSIONS || records > BackupArchive.MAX_RECORDS
         || images > BackupArchive.MAX_IMAGES;
+  }
+
+  static String size(long bytes) {
+    if (bytes == 0) return "0 KiB";
+    if (bytes < 1024) return "小於 1 KiB";
+    if (bytes < 1024 * 1024) return String.format(Locale.TAIWAN, "%.1f KiB", bytes / 1024.0);
+    return String.format(Locale.TAIWAN, "%.1f MiB", bytes / (1024.0 * 1024));
   }
 
   private static String rowBytes(String[] text, String[] numbers, boolean record) {
